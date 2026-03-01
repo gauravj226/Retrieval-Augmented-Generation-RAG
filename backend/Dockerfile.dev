@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps — same as prod but no cleanup needed in dev
+RUN apt-get update && apt-get install -y \
+    build-essential curl \
+    tesseract-ocr tesseract-ocr-eng \
+    poppler-utils \
+    libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    libmagic1
+
+# Install Python deps (cached layer — only re-runs when requirements.txt changes)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install watchfiles        # explicit install for uvicorn --reload
+
+# Source is NOT copied here — it is synced live by docker compose watch
+# Only copy what can't be synced (startup fixtures etc.)
+RUN mkdir -p /app/uploads /app/data
+
+EXPOSE 8000
+
+# --reload watches /app/app; watchfiles polling handles Docker mount detection
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--reload", "--reload-dir", "/app/app"]

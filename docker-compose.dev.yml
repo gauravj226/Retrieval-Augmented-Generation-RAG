@@ -1,0 +1,72 @@
+version: '3.9'
+
+# ── Dev overrides for docker compose watch ───────────────────────────────────
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --watch
+# Or use the shortcut script:
+#   ./dev.sh
+
+services:
+
+  # ── Backend (FastAPI + Uvicorn with --reload) ───────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev         # lighter dev image
+    command: >
+      uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --reload-dir /app/app
+    volumes:
+      - uploads_data:/app/uploads
+      - sqlite_data:/app/data
+    environment:
+      # Force polling so watchfiles detects changes through Docker mounts
+      - WATCHFILES_FORCE_POLLING=true
+      - WATCHFILES_FORCE_POLLING_DELAY=500
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+    develop:
+      watch:
+        # Sync Python source instantly — uvicorn --reload handles the restart
+        - action: sync
+          path: ./backend/app
+          target: /app/app
+          ignore:
+            - __pycache__
+            - "*.pyc"
+            - "*.pyo"
+        # Full rebuild only when dependencies change
+        - action: rebuild
+          path: ./backend/requirements.txt
+        - action: rebuild
+          path: ./backend/Dockerfile.dev
+
+  # ── Frontend (Nginx serving static files) ──────────────────────────────────
+  frontend:
+    develop:
+      watch:
+        # Sync HTML/JS/CSS changes instantly — no rebuild needed
+        - action: sync
+          path: ./frontend
+          target: /usr/share/nginx/html
+          ignore:
+            - Dockerfile
+            - nginx.conf
+            - "*.sh"
+        # Rebuild nginx only when its config changes
+        - action: sync+restart
+          path: ./frontend/nginx.conf
+          target: /etc/nginx/conf.d/default.conf
+
+  # ── ChromaDB — no watch needed (data lives in volume) ──────────────────────
+  chromadb:
+    # inherits everything from docker-compose.yml
+    {}
+
+  # ── Ollama — no watch needed (models live in volume) ───────────────────────
+  ollama:
+    # inherits everything from docker-compose.yml
+    {}

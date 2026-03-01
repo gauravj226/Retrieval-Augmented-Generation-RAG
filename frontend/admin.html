@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Panel — RAG Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body class="admin-page">
+<div class="admin-shell">
+
+  <!-- ── Sidebar ───────────────────────────────────────────────────────────── -->
+  <aside class="admin-sidebar">
+    <div class="admin-logo">
+      <div class="admin-logo-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <span class="admin-logo-text">Admin Panel</span>
+    </div>
+
+    <nav class="admin-nav-section">
+      <div class="admin-nav-label">Overview</div>
+      <button class="admin-nav-item active" data-panel="dashboard">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </button>
+    </nav>
+
+    <nav class="admin-nav-section">
+      <div class="admin-nav-label">Knowledge</div>
+      <button class="admin-nav-item" data-panel="knowledge-bases">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        Knowledge Bases
+      </button>
+      <button class="admin-nav-item" data-panel="personalities">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Personalities
+      </button>
+    </nav>
+
+    <nav class="admin-nav-section">
+      <div class="admin-nav-label">Access Control</div>
+      <button class="admin-nav-item" data-panel="groups">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Groups
+      </button>
+      <button class="admin-nav-item" data-panel="users">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Users
+      </button>
+    </nav>
+
+    <div style="margin-top:auto;padding:16px 20px;border-top:1px solid var(--border-subtle)">
+      <div style="font-size:.8rem;color:var(--text-3);margin-bottom:8px" id="admin-user-name"></div>
+      <div class="flex gap-2">
+        <a href="index.html" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">← Chat</a>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Logout</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main ──────────────────────────────────────────────────────────────── -->
+  <main class="admin-main">
+
+    <!-- Dashboard -->
+    <div id="panel-dashboard" class="admin-panel">
+      <div class="admin-page-header">
+        <h1>Dashboard</h1>
+        <p>System overview — all models run locally via Ollama</p>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">—</div></div>
+        <div class="stat-card"><div class="stat-label">Knowledge Bases</div><div class="stat-value" id="stat-kbs">—</div></div>
+        <div class="stat-card"><div class="stat-label">Active KBs</div><div class="stat-value" id="stat-active">—</div></div>
+        <div class="stat-card"><div class="stat-label">Documents</div><div class="stat-value" id="stat-docs">—</div></div>
+        <div class="stat-card"><div class="stat-label">Groups</div><div class="stat-value" id="stat-groups">—</div></div>
+        <div class="stat-card"><div class="stat-label">Personalities</div><div class="stat-value" id="stat-personalities">—</div></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:12px">Quick actions</h3>
+        <div class="flex gap-2" style="flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="navTo('knowledge-bases');openCreateKBModal()">+ New KB</button>
+          <button class="btn btn-ghost"   onclick="navTo('groups');openCreateGroupModal()">+ New Group</button>
+          <button class="btn btn-ghost"   onclick="navTo('personalities');openCreatePersonalityModal()">+ New Personality</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge Bases -->
+    <div id="panel-knowledge-bases" class="admin-panel hidden">
+      <div class="admin-page-header">
+        <h1>Knowledge Bases</h1>
+        <p>Each KB runs a local Ollama model with MMR retrieval. Assign groups for access control.</p>
+      </div>
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <h3>All knowledge bases</h3>
+          <button class="btn btn-primary btn-sm" onclick="openCreateKBModal()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Knowledge Base
+          </button>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Name</th><th>Department</th><th>Model</th><th>Personality</th>
+              <th>Docs</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="kb-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Personalities -->
+    <div id="panel-personalities" class="admin-panel hidden">
+      <div class="admin-page-header">
+        <h1>Personalities</h1>
+        <p>Define named system prompts that shape how each knowledge base responds. Assign one per KB.</p>
+      </div>
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <h3>All personalities</h3>
+          <button class="btn btn-primary btn-sm" onclick="openCreatePersonalityModal()">+ New Personality</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Name</th><th>Tone</th><th>Preview</th><th>Type</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="personalities-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Groups -->
+    <div id="panel-groups" class="admin-panel hidden">
+      <div class="admin-page-header">
+        <h1>Groups</h1>
+        <p>Groups grant users access to knowledge bases. Each group+KB pair has a <code>read</code> or <code>manage</code> permission level.</p>
+      </div>
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <h3>All groups</h3>
+          <button class="btn btn-primary btn-sm" onclick="openCreateGroupModal()">+ New Group</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Group</th><th>Members</th><th>KB Permissions</th><th>Created</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="groups-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Users -->
+    <div id="panel-users" class="admin-panel hidden">
+      <div class="admin-page-header">
+        <h1>Users</h1>
+        <p>Assign users to groups to control their knowledge base access.</p>
+      </div>
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <h3>All users</h3>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>User</th><th>Full Name</th><th>Department</th>
+              <th>Role</th><th>Groups</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="users-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ══════════════════════════════ MODALS ═══════════════════════════════════ -->
+
+<!-- KB Modal -->
+<div id="kb-modal" class="modal-backdrop hidden">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h2 id="kb-modal-title">Create Knowledge Base</h2>
+      <button class="btn-icon" onclick="closeModal('kb-modal')">✕</button>
+    </div>
+    <form id="kb-form">
+      <input type="hidden" id="kb-id-input" />
+      <div class="tab-bar">
+        <button type="button" class="tab-btn active" onclick="switchTab(this,'tab-kb-general')">General</button>
+        <button type="button" class="tab-btn"        onclick="switchTab(this,'tab-kb-model')">Model & Retrieval</button>
+        <button type="button" class="tab-btn"        onclick="switchTab(this,'tab-kb-personality')">Personality</button>
+      </div>
+
+      <!-- General -->
+      <div id="tab-kb-general" class="tab-panel active">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Name *</label>
+            <input id="kb-name" class="input" type="text" placeholder="e.g. Engineering Docs" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Department *</label>
+            <input id="kb-department" class="input" type="text" placeholder="Engineering, HR, Finance…" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description</label>
+            <textarea id="kb-description" class="textarea" placeholder="Brief description…"></textarea>
+          </div>
+          <label style="display:flex;align-items:center;gap:10px;font-size:.875rem;cursor:pointer">
+            <input id="kb-active" type="checkbox" checked style="accent-color:var(--primary);width:14px;height:14px">
+            Active
+          </label>
+        </div>
+      </div>
+
+      <!-- Model & Retrieval -->
+      <div id="tab-kb-model" class="tab-panel">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Ollama LLM Model</label>
+            <div class="flex gap-2">
+              <select id="kb-model" class="select" style="flex:1">
+                <option value="llama3.2:3b">llama3.2:3b (default)</option>
+              </select>
+              <button type="button" class="btn btn-ghost btn-sm" onclick="refreshOllamaModels()">↻ Refresh</button>
+            </div>
+            <span style="font-size:.75rem;color:var(--text-3)">Models available in the local Ollama instance</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Embedding Model</label>
+            <select id="kb-embedding" class="select">
+              <option value="all-MiniLM-L6-v2">all-MiniLM-L6-v2 (fast, local, default)</option>
+              <option value="all-mpnet-base-v2">all-mpnet-base-v2 (accurate, local)</option>
+              <option value="multi-qa-MiniLM-L6-cos-v1">multi-qa-MiniLM-L6-cos-v1</option>
+            </select>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+            <div class="form-group">
+              <label class="form-label">Temperature</label>
+              <input id="kb-temperature" class="input" type="number" min="0" max="2" step="0.1" value="0.7" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Max Tokens</label>
+              <input id="kb-max-tokens" class="input" type="number" min="256" max="4096" value="1024" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Top-K Docs</label>
+              <input id="kb-top-k" class="input" type="number" min="1" max="10" value="4" />
+            </div>
+          </div>
+          <div class="card" style="margin-top:8px;background:var(--surface-2)">
+            <h3 style="margin-bottom:10px;font-size:.875rem">MMR Retrieval Settings</h3>
+            <p style="font-size:.78rem;color:var(--text-3);margin-bottom:12px">
+              Maximal Marginal Relevance balances document relevance with diversity to avoid repetitive context.
+            </p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+              <div class="form-group">
+                <label class="form-label">Fetch-K (candidates pool)</label>
+                <input id="kb-mmr-fetch-k" class="input" type="number" min="4" max="50" value="16" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Lambda (0=diversity · 1=relevance)</label>
+                <input id="kb-mmr-lambda" class="input" type="number" min="0" max="1" step="0.05" value="0.7" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Personality -->
+      <div id="tab-kb-personality" class="tab-panel">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Personality Preset</label>
+            <select id="kb-personality-id" class="select" onchange="onPersonalityChange()">
+              <option value="">— None / use custom prompt below —</option>
+            </select>
+          </div>
+          <div id="personality-preview-box" class="hidden">
+            <label class="form-label">Preset Preview</label>
+            <div id="personality-preview" class="prompt-preview"></div>
+          </div>
+          <div class="divider"></div>
+          <div class="form-group">
+            <label class="form-label">Custom System Prompt <span style="color:var(--text-3)">(overrides personality if set)</span></label>
+            <textarea id="kb-system-prompt" class="textarea" style="min-height:130px"
+              placeholder="You are a helpful assistant for [Department]…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('kb-modal')">Cancel</button>
+        <button type="submit" id="save-kb-btn" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Docs Modal -->
+<div id="docs-modal" class="modal-backdrop hidden">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h2 id="docs-modal-title">Documents</h2>
+      <button class="btn-icon" onclick="closeModal('docs-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="upload-zone" class="upload-zone">
+        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <p>Drop file here or click to browse</p>
+        <span>PDF · DOCX · XLSX · PPTX · CSV · TXT · MD · HTML · JSON · PNG · JPG · TIFF…</span>
+        <input type="file" id="file-input" class="hidden" multiple
+          accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv,.txt,.md,.html,.htm,.json,.png,.jpg,.jpeg,.tiff,.tif,.bmp,.gif,.webp" />
+      </div>
+      <div class="divider"></div>
+      <div id="docs-list" style="display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('docs-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Personality Modal -->
+<div id="personality-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="personality-modal-title">Create Personality</h2>
+      <button class="btn-icon" onclick="closeModal('personality-modal')">✕</button>
+    </div>
+    <form id="personality-form">
+      <input type="hidden" id="personality-id-input" />
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input id="personality-name" class="input" type="text" placeholder="e.g. Legal Expert" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tone</label>
+          <select id="personality-tone" class="select">
+            <option value="professional">Professional</option>
+            <option value="friendly">Friendly</option>
+            <option value="technical">Technical</option>
+            <option value="concise">Concise</option>
+            <option value="academic">Academic</option>
+            <option value="casual">Casual</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <input id="personality-description" class="input" type="text" placeholder="One-line summary…" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">System Prompt *</label>
+          <textarea id="personality-prompt" class="textarea" style="min-height:140px" required
+            placeholder="You are a… Use the provided context to… If the answer isn't in the context, say so clearly."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('personality-modal')">Cancel</button>
+        <button type="submit" id="save-personality-btn" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Group Modal -->
+<div id="group-modal" class="modal-backdrop hidden">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h2 id="group-modal-title">Create Group</h2>
+      <button class="btn-icon" onclick="closeModal('group-modal')">✕</button>
+    </div>
+    <form id="group-form">
+      <input type="hidden" id="group-id-input" />
+      <div class="tab-bar">
+        <button type="button" class="tab-btn active" onclick="switchTab(this,'tab-group-info')">Info</button>
+        <button type="button" class="tab-btn"        onclick="switchTab(this,'tab-group-kbs')">KB Permissions</button>
+        <button type="button" class="tab-btn"        onclick="switchTab(this,'tab-group-members')">Members</button>
+      </div>
+
+      <div id="tab-group-info" class="tab-panel active">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Group Name *</label>
+            <input id="group-name" class="input" type="text" placeholder="e.g. Engineering Team" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description</label>
+            <textarea id="group-description" class="textarea" placeholder="Purpose of this group…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-group-kbs" class="tab-panel">
+        <div class="modal-body">
+          <p style="font-size:.82rem;color:var(--text-3);margin-bottom:12px">
+            Assign knowledge bases to this group. Choose <strong>read</strong> (query only) or
+            <strong>manage</strong> (query + upload/delete documents).
+          </p>
+          <div id="group-kb-permissions" style="display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div id="tab-group-members" class="tab-panel">
+        <div class="modal-body">
+          <p style="font-size:.82rem;color:var(--text-3);margin-bottom:12px">
+            Select users to include in this group.
+          </p>
+          <div id="group-members-list" style="display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('group-modal')">Cancel</button>
+        <button type="submit" id="save-group-btn" class="btn btn-primary">Save Group</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- User Edit Modal -->
+<div id="user-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Edit User</h2>
+      <button class="btn-icon" onclick="closeModal('user-modal')">✕</button>
+    </div>
+    <form id="user-form">
+      <input type="hidden" id="edit-user-id" />
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <input id="edit-user-email" class="input" type="email" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Full name</label>
+          <input id="edit-user-fullname" class="input" type="text" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Department</label>
+          <input id="edit-user-dept" class="input" type="text" />
+        </div>
+        <div class="flex gap-4">
+          <label style="display:flex;align-items:center;gap:8px;font-size:.875rem;cursor:pointer">
+            <input id="edit-user-admin"  type="checkbox" style="accent-color:var(--primary);width:14px;height:14px"> Admin
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:.875rem;cursor:pointer">
+            <input id="edit-user-active" type="checkbox" style="accent-color:var(--primary);width:14px;height:14px"> Active
+          </label>
+        </div>
+        <div class="divider"></div>
+        <div class="form-group">
+          <label class="form-label">Group Memberships</label>
+          <p style="font-size:.78rem;color:var(--text-3);margin-bottom:8px">
+            Groups determine which knowledge bases the user can access.
+          </p>
+          <div id="user-groups-list" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('user-modal')">Cancel</button>
+        <button type="submit" id="save-user-btn" class="btn btn-primary">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast-container" class="toast-container"></div>
+
+<script src="js/api.js?v=20260227-1"></script>
+<script src="js/admin.js?v=20260227-1"></script>
+<script>
+  function switchTab(btn, tabId) {
+    const form = btn.closest('form') || btn.closest('.modal');
+    form.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    form.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(tabId).classList.add('active');
+  }
+  function navTo(panel) {
+    document.querySelector(`[data-panel="${panel}"]`)?.click();
+  }
+</script>
+</body>
+</html>
