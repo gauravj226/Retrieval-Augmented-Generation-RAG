@@ -16,6 +16,7 @@ class AgentState(TypedDict):
 
     # ── Routing ───────────────────────────────────────────────────────────────
     route_decision: str                        # "retrieve" | "general" | "clarify"
+    route_mode: str                            # "retrieve" | "sparse" | "graph"
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
     documents:      List[Any]                  # retrieved LangChain Documents
@@ -40,6 +41,9 @@ class AgentState(TypedDict):
     sources:        List[dict]
     reasoning_trace: Annotated[List[str], operator.add]  # append-only trace
     system_prompt:  Optional[str]              # resolved personality prompt
+    memory_context: Optional[str]              # persistent user preferences and facts
+    user_id: Optional[int]
+    session_id: Optional[int]
 
     # ── Limits (prevent infinite loops) ──────────────────────────────────────
     max_rewrites:   int

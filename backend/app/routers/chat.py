@@ -110,6 +110,8 @@ async def send_message(
             question=request.message,
             chat_history=chat_history,
             db=db,
+            user_id=current_user.id,
+            session_id=session.id,
             fast_mode_override=request.fast_mode,
         )
     except Exception as e:

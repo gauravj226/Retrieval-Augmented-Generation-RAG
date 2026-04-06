@@ -1,6 +1,6 @@
 import logging
 import uuid
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -8,7 +8,6 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferWindowMemory
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
 from sqlalchemy.orm import Session
@@ -17,6 +16,9 @@ import torch
 from ..config import settings
 from ..models.models import KnowledgeBase, Personality
 from .document_processor import process_file
+from .graph_memory import GraphMemoryStore
+from .sota_retrieval import contextualize_documents
+from .vector_store_factory import get_vector_store
 
 logger = logging.getLogger(__name__)
 _chroma_client = None
@@ -103,17 +105,17 @@ def get_llm(kb: KnowledgeBase) -> ChatOllama:
 
 # â”€â”€ Vector store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def get_vectorstore(kb: KnowledgeBase) -> Chroma:
-    return Chroma(
-        client=get_chroma_client(),
-        collection_name=kb.chroma_collection,
+def get_vectorstore(kb: KnowledgeBase):
+    return get_vector_store(
+        kb=kb,
         embedding_function=get_embeddings(kb.embedding_model),
+        chroma_client=get_chroma_client(),
     )
 
 
 # â”€â”€ MMR retriever â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Chroma):
+def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Any):
     """Maximal Marginal Relevance â€” balances relevance vs diversity."""
     top_k    = kb.top_k_docs or 4
     fetch_k  = max(kb.mmr_fetch_k or top_k * 4, top_k + 1)
@@ -196,16 +198,21 @@ async def ingest_document(
         for chunk in chunks:
             chunk.metadata = _sanitize_metadata(chunk.metadata or {})
 
-    vectorstore = Chroma(
-        client=get_chroma_client(),
-        collection_name=kb.chroma_collection,
+    if settings.ENABLE_CONTEXTUAL_RETRIEVAL:
+        chunks = contextualize_documents(chunks)
+
+    vectorstore = get_vector_store(
+        kb=kb,
         embedding_function=get_embeddings(kb.embedding_model),
+        chroma_client=get_chroma_client(),
     )
 
     # page_content = summary (what gets embedded and searched)
     # metadata.raw = full content (what gets sent to the LLM)
     # ChromaDB stores both â€” retrieval returns summary+metadata together
     vectorstore.add_documents(chunks)
+    if settings.ENABLE_GRAPH_RAG:
+        GraphMemoryStore(settings.GRAPH_MEMORY_DIR).index_documents(kb_id=kb.id, docs=chunks)
 
     logger.info(f"[ingest] '{original_filename}': {len(chunks)} chunks â†’ ChromaDB")
     return len(chunks)

@@ -32,7 +32,6 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain.schema import Document
-from langchain_chroma import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
@@ -43,11 +42,22 @@ from ..config import settings
 from ..models.models import KnowledgeBase, Personality
 from .agent_state import AgentState
 from .rag_service import get_chroma_client, get_embeddings
+from .graph_memory import GraphMemoryStore
+from .long_term_memory import LongTermMemoryStore
+from .semantic_cache import SemanticAnswerCache
+from .sota_retrieval import route_mode_for_query, score_sparse_hits
+from .vector_store_factory import get_vector_store
+from .web_search import web_search
 
 logger = logging.getLogger(__name__)
 _cross_encoder_cache: dict = {}
 _query_cache: Dict[str, Tuple[float, Tuple[str, List[dict], List[str]]]] = {}
 _query_cache_lock = threading.Lock()
+_semantic_cache = SemanticAnswerCache(
+    similarity_threshold=settings.SEMANTIC_CACHE_SIMILARITY,
+    ttl_seconds=settings.SEMANTIC_CACHE_TTL_SEC,
+    max_entries=settings.SEMANTIC_CACHE_MAX,
+)
 DEFAULT_MAX_REWRITES = 2
 DEFAULT_MAX_RETRIES  = 2
 
@@ -246,6 +256,7 @@ def make_route_query(kb: KnowledgeBase):
 
     async def route_query(state: AgentState) -> dict:
         question = state["question"]
+        mode_hint = route_mode_for_query(question)
         if bool(state.get("fast_mode")):
             q = question.strip().lower()
             if q in {"hi", "hello", "hey", "thanks", "thank you"}:
@@ -256,7 +267,8 @@ def make_route_query(kb: KnowledgeBase):
                 decision = "retrieve"
             return {
                 "route_decision": decision,
-                "reasoning_trace": [f"Route decision: **{decision}**"],
+                "route_mode": mode_hint,
+                "reasoning_trace": [f"Route decision: **{decision}** ({mode_hint})"],
             }
 
         prompt = f"""You are a query router for a knowledge base in the '{kb.department}' department.
@@ -278,16 +290,17 @@ Question: {question}"""
         logger.info(f"[route_query] → {decision}")
         return {
             "route_decision":   decision,
-            "reasoning_trace":  [f"🔀 Route decision: **{decision}**"],
+            "route_mode":       mode_hint if decision == "retrieve" else decision,
+            "reasoning_trace":  [f"🔀 Route decision: **{decision}** ({mode_hint})"],
         }
     return route_query
 
 
 def make_retrieve(kb: KnowledgeBase):
-    vectorstore = Chroma(
-        client=get_chroma_client(),
-        collection_name=kb.chroma_collection,
+    vectorstore = get_vector_store(
+        kb=kb,
         embedding_function=get_embeddings(kb.embedding_model),
+        chroma_client=get_chroma_client(),
     )
     top_k = kb.top_k_docs or 4
     fetch_k = max(kb.mmr_fetch_k or top_k * 6, top_k + 2)
@@ -303,6 +316,10 @@ def make_retrieve(kb: KnowledgeBase):
     async def retrieve(state: AgentState) -> dict:
         query = state.get("rewritten_query") or state["question"]
         queries = [query] if bool(state.get("fast_mode")) else _expand_query(query)
+        route_mode = state.get("route_mode", "retrieve")
+        if settings.ENABLE_GRAPH_RAG and route_mode == "graph":
+            graph_terms = GraphMemoryStore(settings.GRAPH_MEMORY_DIR).expand_query(kb_id=kb.id, query=query)
+            queries.extend(graph_terms[:4])
 
         merged: List[Document] = []
         seen = set()
@@ -333,10 +350,13 @@ def make_retrieve(kb: KnowledgeBase):
             all_docs.append(d)
 
         reranked = _keyword_rerank(all_docs, query, keep=max(top_k * 4, 10))
+        if route_mode == "sparse":
+            sparse_hits = score_sparse_hits(query, reranked, top_k=max(top_k * 3, 8))
+            reranked = [Document(page_content=h.content, metadata=h.metadata) for h in sparse_hits]
         reranked = _cross_encoder_rerank(query, reranked, keep=max(top_k * 3, 8))
         return {
             "documents":        reranked,
-            "reasoning_trace":  [f"📚 Retrieved {len(reranked)} docs for: *{query[:60]}*"],
+            "reasoning_trace":  [f"📚 Retrieved {len(reranked)} docs for: *{query[:60]}* [{route_mode}]"],
         }
     return retrieve
 
@@ -412,6 +432,7 @@ def make_generate(kb: KnowledgeBase):
         chat_history  = state.get("chat_history", [])
         gen_count     = state.get("generation_count", 0)
         reflection    = state.get("reflection")
+        memory_context = state.get("memory_context", "")
         # Docling/VLM chunks embed a summary but store full content in raw.
         # Standard chunks have no raw (page_content is already the full text).
         context_parts = []
@@ -445,7 +466,7 @@ def make_generate(kb: KnowledgeBase):
                 "You are a precise AI assistant. Answer using ONLY the provided context. "
                 "If the answer is not in the context, say so clearly. "
                 "When context contains Markdown tables, preserve them in your answer."),
-            HumanMessage(content=f'Context:\n"""\n{context}\n"""{history_str}{reflection_hint}\n\nQuestion: {question}\n\nAnswer:'),
+            HumanMessage(content=f'Context:\n"""\n{context}\n"""\n\n{memory_context}{history_str}{reflection_hint}\n\nQuestion: {question}\n\nAnswer:'),
         ]
 
         result     = await llm.ainvoke(messages)
@@ -727,6 +748,8 @@ async def run_agentic_rag(
     question: str,
     chat_history: Optional[List[Tuple[str, str]]],
     db: Session,
+    user_id: Optional[int] = None,
+    session_id: Optional[int] = None,
     fast_mode_override: Optional[bool] = None,
 ) -> Tuple[str, List[dict], List[str]]:
     """
@@ -745,6 +768,23 @@ async def run_agentic_rag(
         hit = _query_cache.get(cache_key)
         if hit and (now - hit[0]) <= ttl:
             return hit[1]
+    if settings.ENABLE_SEMANTIC_CACHE:
+        sem_hit = _semantic_cache.get(
+            query=question,
+            kb_id=kb.id,
+            mode="fast" if effective_fast_mode else "quality",
+        )
+        if sem_hit:
+            answer, sources, trace, score = sem_hit
+            trace = list(trace) + [f"Semantic cache hit (score={score:.2f})"]
+            return answer, sources, trace
+
+    memory_context = ""
+    memory_store = None
+    if settings.ENABLE_LONG_TERM_MEMORY and user_id is not None and session_id is not None:
+        memory_store = LongTermMemoryStore(settings.MEMORY_STORE_DIR)
+        profile = memory_store.load(user_id=user_id, session_id=session_id)
+        memory_context = LongTermMemoryStore.to_prompt_context(profile)
 
     initial_state: AgentState = {
         "question":          question,
@@ -752,6 +792,7 @@ async def run_agentic_rag(
         "chat_history":      chat_history or [],
         "fast_mode":         effective_fast_mode,
         "route_decision":    "",
+        "route_mode":        "retrieve",
         "documents":         [],
         "rewrite_count":     0,
         "rewritten_query":   None,
@@ -766,6 +807,9 @@ async def run_agentic_rag(
         "sources":           [],
         "reasoning_trace":   ["Fast mode enabled"] if effective_fast_mode else [],
         "system_prompt":     system_prompt,
+        "memory_context":    memory_context,
+        "user_id":           user_id,
+        "session_id":        session_id,
         "max_rewrites":      DEFAULT_MAX_REWRITES,
         "max_retries":       DEFAULT_MAX_RETRIES,
     }
@@ -776,6 +820,31 @@ async def run_agentic_rag(
         answer    = final.get("final_answer") or final.get("generation") or "Unable to answer."
         sources   = final.get("sources", [])
         trace     = final.get("reasoning_trace", [])
+
+        if settings.ENABLE_WEB_FALLBACK and (not sources or "not in the context" in answer.lower()):
+            web_sources = web_search(question, max_results=settings.WEB_SEARCH_MAX_RESULTS)
+            if web_sources:
+                snippets = "\n\n".join(
+                    f"[{i+1}] {row.get('title', 'Web Result')}\n{row.get('content', '')}"
+                    for i, row in enumerate(web_sources[: settings.WEB_SEARCH_MAX_RESULTS])
+                )
+                llm = _gen_llm(kb)
+                web_prompt = (
+                    "Local knowledge base could not fully answer. Use the web snippets below and cite uncertainty.\n\n"
+                    f"{snippets}\n\nQuestion: {question}\n\nAnswer:"
+                )
+                web_answer = await llm.ainvoke([HumanMessage(content=web_prompt)])
+                answer = (web_answer.content or "").strip() or answer
+                sources = sources + web_sources
+                trace = list(trace) + ["Web fallback used after weak local retrieval."]
+
+        if memory_store is not None:
+            memory_store.update(
+                user_id=int(user_id),
+                session_id=int(session_id),
+                user_message=question,
+                assistant_message=answer,
+            )
         result = (answer, sources, trace)
 
         with _query_cache_lock:
@@ -783,6 +852,15 @@ async def run_agentic_rag(
             if len(_query_cache) > int(settings.QUERY_CACHE_MAX):
                 oldest_key = min(_query_cache, key=lambda k: _query_cache[k][0])
                 _query_cache.pop(oldest_key, None)
+        if settings.ENABLE_SEMANTIC_CACHE:
+            _semantic_cache.put(
+                query=question,
+                answer=answer,
+                kb_id=kb.id,
+                mode="fast" if effective_fast_mode else "quality",
+                sources=sources,
+                trace=trace,
+            )
 
         return result
     except Exception as e:
