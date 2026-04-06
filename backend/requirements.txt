@@ -5,12 +5,15 @@ torch==2.6.0+cu124
 langchain==0.3.7
 langchain-community==0.3.7
 langchain-chroma==0.1.4
+langchain-qdrant==0.2.0
 langchain-ollama==0.2.3
 langgraph==0.2.70
 langchain-text-splitters==0.3.2
 langchain-huggingface==0.1.2
 chromadb==0.5.20
+qdrant-client==1.12.1
 sentence-transformers==3.3.1
+duckduckgo-search==7.3.1
 sqlalchemy==2.0.35
 python-jose[cryptography]==3.3.0
 passlib==1.7.4

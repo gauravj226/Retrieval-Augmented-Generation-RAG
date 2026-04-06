@@ -6,6 +6,9 @@ It supports:
 - Multi-tenant knowledge bases with role-based access.
 - Local LLM inference through Ollama.
 - Hybrid retrieval with an agentic flow.
+- Contextual retrieval with late chunking summaries.
+- Adaptive route selection (`retrieve`, `sparse`, `graph`) and optional web fallback.
+- Semantic response cache and persistent long-term memory profiles.
 - OCR and layout-aware document ingestion.
 - Async ingestion queue with background workers (uploads return quickly).
 - Admin panel for users, groups, permissions, personalities, and KB settings.
@@ -107,11 +110,21 @@ Upload and retrieval:
 - `HYBRID_LEXICAL_MAX_DOCS`
 - `ENABLE_CROSS_ENCODER_RERANK`
 - `CROSS_ENCODER_MODEL`
+- `VECTOR_DB_PROVIDER` (`chroma` or `qdrant`)
+- `QDRANT_HOST`, `QDRANT_PORT`
+- `ENABLE_CONTEXTUAL_RETRIEVAL`
+- `ENABLE_GRAPH_RAG`, `GRAPH_MEMORY_DIR`
 
 Latency tuning:
 - `FAST_MODE`
 - `QUERY_CACHE_TTL_SEC`
 - `QUERY_CACHE_MAX`
+- `ENABLE_SEMANTIC_CACHE`
+- `SEMANTIC_CACHE_SIMILARITY`
+- `SEMANTIC_CACHE_TTL_SEC`
+- `SEMANTIC_CACHE_MAX`
+- `ENABLE_LONG_TERM_MEMORY`, `MEMORY_STORE_DIR`
+- `ENABLE_WEB_FALLBACK`, `WEB_SEARCH_PROVIDER`, `WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_TIMEOUT_SEC`
 - `VLM_MAX_PAGES`
 - `VLM_DPI`
 - `VLM_CONCURRENCY`
@@ -213,6 +226,16 @@ Upload endpoint is still slow:
 
 Frontend shows stale code:
 - Ensure you are running in watch mode for dev, or rebuild frontend image in prod mode.
+
+## Continuous Evaluation
+
+Run the CI-oriented evaluator with a JSONL dataset:
+
+```bash
+python -m app.eval.continuous_eval --dataset ../eval/sample_eval.jsonl
+```
+
+Use threshold flags (`--min-retrieval`, `--min-grounding`, `--min-relevance`) to enforce regression gates.
 
 ## Security Notes
 

@@ -1,0 +1,2 @@
+{"question":"How to reset VPN password?","answer":"Use the self-service portal to reset your VPN password.","contexts":["VPN passwords can be reset in the self-service portal."],"expected_sources":["vpn_policy.md"],"sources":["vpn_policy.md"]}
+{"question":"What is GraphRAG used for?","answer":"GraphRAG is used to traverse entity relationships for multi-hop retrieval.","contexts":["GraphRAG links entities and supports multi-hop reasoning."],"expected_sources":["architecture.md"],"sources":["architecture.md"]}
