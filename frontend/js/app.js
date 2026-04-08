@@ -1,4 +1,4 @@
-﻿// â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+﻿//  State 
 const state = {
   kbs: [],
   sessions: [],
@@ -12,7 +12,7 @@ const MAX_UPLOAD_FILE_MB = 15;
 const MAX_UPLOAD_FILE_BYTES = MAX_UPLOAD_FILE_MB * 1024 * 1024;
 const FAST_MODE_STORAGE_KEY = 'rag_fast_mode';
 
-// â”€â”€ DOM helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  DOM helpers 
 // Resolve message container across legacy and current markup.
 const getInner = () =>
   document.getElementById('messages-inner') ||
@@ -32,7 +32,7 @@ function hideWelcome() {
   document.getElementById('welcome-state')?.classList.add('hidden');
 }
 
-// â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Toast 
 function toast(message, type = 'success') {
   const icon = type === 'success'
     ? `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`
@@ -45,7 +45,7 @@ function toast(message, type = 'success') {
 }
 
 
-// â”€â”€ XSS sanitizer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  XSS sanitizer 
 // Strips all script/event-handler content before any innerHTML assignment.
 // Uses a temporary DOM element so the browser's own parser does the work.
 function sanitize(html) {
@@ -76,7 +76,7 @@ function sanitize(html) {
   wrapper.appendChild(doc.cloneNode(true));
   return wrapper.innerHTML;
 }
-// â”€â”€ Markdown-lite renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Markdown-lite renderer 
 function renderMarkdown(text) {
   const raw = text
     .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
@@ -92,7 +92,7 @@ function renderMarkdown(text) {
   return sanitize(raw);
 }
 
-// â”€â”€ Auth UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Auth UI 
 function initAuth() {
   const overlay   = document.getElementById('auth-overlay');
   const app       = document.getElementById('app');
@@ -175,7 +175,7 @@ function initAuth() {
   }
 }
 
-// â”€â”€ App Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  App Init 
 async function initApp() {
   const user = Auth.user();
   if (!user) return;
@@ -214,7 +214,7 @@ function initFastModeToggle() {
   });
 }
 
-// â”€â”€ Knowledge Bases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Knowledge Bases 
 async function loadKBs() {
   try {
     state.kbs = await ChatAPI.getKBs();
@@ -226,7 +226,7 @@ async function loadKBs() {
 
 function renderKBSelector() {
   const sel = document.getElementById('kb-select');
-  sel.innerHTML = '<option value="">â€” Select knowledge base â€”</option>';
+  sel.innerHTML = '<option value=""> Select knowledge base </option>';
   state.kbs.forEach(kb => {
     const opt = document.createElement('option');
     opt.value = kb.id;
@@ -269,7 +269,7 @@ function selectKB(kb) {
 }
 
 
-// â”€â”€ Sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Sessions 
 async function loadSessions() {
   try {
     state.sessions = await ChatAPI.getSessions();
@@ -287,7 +287,7 @@ function renderSessions() {
   }
 
   state.sessions.forEach(session => {
-    // â”€â”€ Use <div role="button"> as outer â€” never nest <button> in <button> â”€â”€
+    //  Use <div role="button"> as outer  never nest <button> in <button> 
     const item = document.createElement('div');
     item.className   = `session-item ${state.currentSession?.id === session.id ? 'active' : ''}`;
     item.setAttribute('role',     'button');
@@ -358,10 +358,10 @@ async function loadSession(session) {
         try {
           const parsed = JSON.parse(msg.sources);
           if (Array.isArray(parsed)) {
-            // Legacy format â€” plain array, no trace
+            // Legacy format  plain array, no trace
             sources = parsed;
           } else if (parsed && typeof parsed === 'object') {
-            // Current format â€” {sources: [], reasoning_trace: []}
+            // Current format  {sources: [], reasoning_trace: []}
             sources = Array.isArray(parsed.sources)         ? parsed.sources         : [];
             trace   = Array.isArray(parsed.reasoning_trace) ? parsed.reasoning_trace : [];
             uiPayload = parsed.ui_payload && typeof parsed.ui_payload === 'object' ? parsed.ui_payload : null;
@@ -395,7 +395,7 @@ async function deleteSession(id) {
   }
 }
 
-// â”€â”€ Input bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Input bar 
 function setupInputBar() {
   const input   = document.getElementById('chat-input');
   const sendBtn = document.getElementById('send-btn');
@@ -412,7 +412,7 @@ function setupInputBar() {
   sendBtn.addEventListener('click', sendMessage);
 }
 
-// â”€â”€ KB Management Drawer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  KB Management Drawer 
 let chatDrawerOpen = false;
 
 async function checkAndShowManageButton(kb) {
@@ -475,7 +475,7 @@ async function refreshChatDocs() {
                         : doc.status === 'processing' ? 'badge-blue'
                         : 'badge-red';
 
-      // â”€â”€ Ownership check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      //  Ownership check 
       // Number() handles both string "3" and number 3 from the API.
       // If uploaded_by is null (legacy doc), treat as owned by no one
       // unless the user is admin.
@@ -499,7 +499,7 @@ async function refreshChatDocs() {
            </button>`
         : `<span title="Uploaded by another user"
              style="flex-shrink:0;font-size:.72rem;color:var(--text-3);padding:0 6px;
-                    cursor:default;user-select:none">ðŸ”’</span>`;
+                    cursor:default;user-select:none">”’</span>`;
 
       const ownerNote = !isOwner
         ? `&middot; <span style="color:var(--text-3);font-style:italic">another user</span>`
@@ -608,7 +608,7 @@ async function handleChatUpload(fileList) {
   }
   if (!files.length) return;
 
-  // Swap to loading state â€” keep same elements, just change content
+  // Swap to loading state  keep same elements, just change content
   const originalHTML = zone.innerHTML;
   const label = files.length === 1 ? files[0].name : `${files.length} files`;
   zone.innerHTML = `
@@ -625,7 +625,7 @@ async function handleChatUpload(fileList) {
   } catch (err) {
     toast(err.message, 'error');
   } finally {
-    // Restore original HTML â€” dataset.bound stays true so no re-binding needed
+    // Restore original HTML  dataset.bound stays true so no re-binding needed
     zone.innerHTML = originalHTML;
     if (input) input.value = '';
   }
@@ -714,7 +714,7 @@ async function sendMessage() {
   }
 }
 
-// â”€â”€ Message renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Message renderer 
 function appendMessage(role, content, sources = [], trace = [], uiPayload = null) {
   const inner   = getInner();
   const wrapper = getWrapper();
@@ -726,7 +726,7 @@ function appendMessage(role, content, sources = [], trace = [], uiPayload = null
     ? (user?.full_name || user?.username || 'U')[0].toUpperCase()
     : 'AI';
 
-  // â”€â”€ Reasoning trace â€” sanitize each step â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  Reasoning trace  sanitize each step 
   const traceHTML = (!isUser && trace && trace.length > 1)
     ? `<details class="reasoning-trace">
         <summary>
@@ -740,7 +740,7 @@ function appendMessage(role, content, sources = [], trace = [], uiPayload = null
         </summary>
         <ol class="trace-steps">
           ${trace.map(t => `<li>${sanitize(
-            // Only allow bold/italic in trace text â€” no raw HTML from model
+            // Only allow bold/italic in trace text  no raw HTML from model
             escapeHTML(String(t ?? ''))
               .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
               .replace(/\*(.*?)\*/g, '<em>$1</em>')
@@ -749,11 +749,11 @@ function appendMessage(role, content, sources = [], trace = [], uiPayload = null
        </details>`
     : '';
 
-  // â”€â”€ Sources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  Sources 
   const pipelineLabel = {
-  docling:  { text: 'ðŸ“Š Docling',  color: '#6366f1' },
-  vlm:      { text: 'ðŸ‘ VLM',      color: '#f59e0b' },
-  standard: { text: 'ðŸ“„ Text',     color: '#10b981' },
+  docling:  { text: 'Docling',  color: '#6366f1' },
+  vlm:      { text: '‘ VLM',      color: '#f59e0b' },
+  standard: { text: 'Text',     color: '#10b981' },
 };
 
 const sourcesHTML = (sources && sources.length)
@@ -853,7 +853,7 @@ function renderGeneratedChart(canvasId, uiPayload) {
   });
 }
 
-// â”€â”€ Utils â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Utils 
 function escapeHTML(str) {
   return String(str)
     .replace(/&/g, '&amp;')

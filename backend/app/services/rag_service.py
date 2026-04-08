@@ -25,7 +25,7 @@ _chroma_client = None
 _embeddings_cache: dict = {}
 
 
-# â”€â”€ Chroma client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Chroma client 
 
 def get_chroma_client() -> chromadb.HttpClient:
     global _chroma_client
@@ -38,7 +38,7 @@ def get_chroma_client() -> chromadb.HttpClient:
     return _chroma_client
 
 
-# â”€â”€ Metadata sanitiser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Metadata sanitiser 
 # ChromaDB 0.5.x ONLY allows str / int / float / bool metadata values.
 # Keys starting with '_' (LangChain internals like _type, _id) are also dropped.
 
@@ -58,13 +58,13 @@ def _sanitize_metadata(meta: dict) -> dict:
         elif isinstance(v, str):
             safe[k] = v
         elif v is None:
-            safe[k] = ""              # None not allowed â€” use empty string
+            safe[k] = ""              # None not allowed  use empty string
         else:
             safe[k] = str(v)          # lists/dicts/objects â†’ stringify
     return safe
 
 
-# â”€â”€ Embeddings (local sentence-transformers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Embeddings (local sentence-transformers) 
 
 def get_embeddings(model_name: str) -> HuggingFaceEmbeddings:
     if model_name not in _embeddings_cache:
@@ -92,7 +92,7 @@ def get_embeddings(model_name: str) -> HuggingFaceEmbeddings:
     return _embeddings_cache[model_name]
 
 
-# â”€â”€ Local LLM via Ollama â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Local LLM via Ollama 
 
 def get_llm(kb: KnowledgeBase) -> ChatOllama:
     return ChatOllama(
@@ -103,7 +103,7 @@ def get_llm(kb: KnowledgeBase) -> ChatOllama:
     )
 
 
-# â”€â”€ Vector store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Vector store 
 
 def get_vectorstore(kb: KnowledgeBase):
     return get_vector_store(
@@ -113,10 +113,10 @@ def get_vectorstore(kb: KnowledgeBase):
     )
 
 
-# â”€â”€ MMR retriever â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  MMR retriever 
 
 def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Any):
-    """Maximal Marginal Relevance â€” balances relevance vs diversity."""
+    """Maximal Marginal Relevance  balances relevance vs diversity."""
     top_k    = kb.top_k_docs or 4
     fetch_k  = max(kb.mmr_fetch_k or top_k * 4, top_k + 1)
     lmb      = float(kb.mmr_lambda or 0.7)
@@ -126,7 +126,7 @@ def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Any):
     )
 
 
-# â”€â”€ Personality resolver â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Personality resolver 
 
 def resolve_system_prompt(kb: KnowledgeBase, db: Session) -> str:
     if kb.system_prompt and kb.system_prompt.strip():
@@ -141,7 +141,7 @@ def resolve_system_prompt(kb: KnowledgeBase, db: Session) -> str:
     )
 
 
-# â”€â”€ Document ingestion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Document ingestion 
 
 async def ingest_document(
     file_path: str,
@@ -162,7 +162,7 @@ async def ingest_document(
     ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else ""
     logger.info(f"[ingest] '{original_filename}' classified as: {doc_type}")
 
-    # â”€â”€ Route to appropriate parser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Route to appropriate parser 
     if doc_type == "structured":
         if ext == "pdf":
             try:
@@ -184,7 +184,7 @@ async def ingest_document(
                 chunks = await _standard_chunks(file_path, original_filename, kb)
 
     else:
-        # Standard text pipeline â€” existing behaviour unchanged
+        # Standard text pipeline  existing behaviour unchanged
         chunks = await _standard_chunks(file_path, original_filename, kb)
 
     if not chunks:
@@ -209,7 +209,7 @@ async def ingest_document(
 
     # page_content = summary (what gets embedded and searched)
     # metadata.raw = full content (what gets sent to the LLM)
-    # ChromaDB stores both â€” retrieval returns summary+metadata together
+    # ChromaDB stores both  retrieval returns summary+metadata together
     vectorstore.add_documents(chunks)
     if settings.ENABLE_GRAPH_RAG:
         GraphMemoryStore(settings.GRAPH_MEMORY_DIR).index_documents(kb_id=kb.id, docs=chunks)
@@ -280,7 +280,7 @@ async def query_kb(
     return answer, sources
 
 
-# â”€â”€ Cleanup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Cleanup 
 
 def delete_kb_collection(collection_name: str):
     try:
