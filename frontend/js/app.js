@@ -1,4 +1,4 @@
-// ── State ──────────────────────────────────────────────────────────────────────
+﻿// â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const state = {
   kbs: [],
   sessions: [],
@@ -12,7 +12,7 @@ const MAX_UPLOAD_FILE_MB = 15;
 const MAX_UPLOAD_FILE_BYTES = MAX_UPLOAD_FILE_MB * 1024 * 1024;
 const FAST_MODE_STORAGE_KEY = 'rag_fast_mode';
 
-// ── DOM helpers ────────────────────────────────────────────────────────────────
+// â”€â”€ DOM helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Resolve message container across legacy and current markup.
 const getInner = () =>
   document.getElementById('messages-inner') ||
@@ -32,7 +32,7 @@ function hideWelcome() {
   document.getElementById('welcome-state')?.classList.add('hidden');
 }
 
-// ── Toast ──────────────────────────────────────────────────────────────────────
+// â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function toast(message, type = 'success') {
   const icon = type === 'success'
     ? `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`
@@ -45,7 +45,7 @@ function toast(message, type = 'success') {
 }
 
 
-// ── XSS sanitizer ──────────────────────────────────────────────────────────
+// â”€â”€ XSS sanitizer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Strips all script/event-handler content before any innerHTML assignment.
 // Uses a temporary DOM element so the browser's own parser does the work.
 function sanitize(html) {
@@ -60,7 +60,7 @@ function sanitize(html) {
     doc.querySelectorAll(tag).forEach(el => el.remove());
   });
 
-  // Strip event handler attributes (onclick, onerror, onload …)
+  // Strip event handler attributes (onclick, onerror, onload â€¦)
   doc.querySelectorAll('*').forEach(el => {
     [...el.attributes].forEach(attr => {
       if (/^on\w+/i.test(attr.name) ||
@@ -76,7 +76,7 @@ function sanitize(html) {
   wrapper.appendChild(doc.cloneNode(true));
   return wrapper.innerHTML;
 }
-// ── Markdown-lite renderer ─────────────────────────────────────────────────────
+// â”€â”€ Markdown-lite renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderMarkdown(text) {
   const raw = text
     .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
@@ -92,7 +92,7 @@ function renderMarkdown(text) {
   return sanitize(raw);
 }
 
-// ── Auth UI ────────────────────────────────────────────────────────────────────
+// â”€â”€ Auth UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function initAuth() {
   const overlay   = document.getElementById('auth-overlay');
   const app       = document.getElementById('app');
@@ -175,7 +175,7 @@ function initAuth() {
   }
 }
 
-// ── App Init ───────────────────────────────────────────────────────────────────
+// â”€â”€ App Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function initApp() {
   const user = Auth.user();
   if (!user) return;
@@ -214,7 +214,7 @@ function initFastModeToggle() {
   });
 }
 
-// ── Knowledge Bases ────────────────────────────────────────────────────────────
+// â”€â”€ Knowledge Bases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function loadKBs() {
   try {
     state.kbs = await ChatAPI.getKBs();
@@ -226,7 +226,7 @@ async function loadKBs() {
 
 function renderKBSelector() {
   const sel = document.getElementById('kb-select');
-  sel.innerHTML = '<option value="">— Select knowledge base —</option>';
+  sel.innerHTML = '<option value="">â€” Select knowledge base â€”</option>';
   state.kbs.forEach(kb => {
     const opt = document.createElement('option');
     opt.value = kb.id;
@@ -269,7 +269,7 @@ function selectKB(kb) {
 }
 
 
-// ── Sessions ───────────────────────────────────────────────────────────────────
+// â”€â”€ Sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function loadSessions() {
   try {
     state.sessions = await ChatAPI.getSessions();
@@ -287,7 +287,7 @@ function renderSessions() {
   }
 
   state.sessions.forEach(session => {
-    // ── Use <div role="button"> as outer — never nest <button> in <button> ──
+    // â”€â”€ Use <div role="button"> as outer â€” never nest <button> in <button> â”€â”€
     const item = document.createElement('div');
     item.className   = `session-item ${state.currentSession?.id === session.id ? 'active' : ''}`;
     item.setAttribute('role',     'button');
@@ -315,7 +315,7 @@ function renderSessions() {
         </svg>
       </button>`;
 
-    // Click outer div → load session
+    // Click outer div â†’ load session
     item.addEventListener('click', (e) => {
       if (e.target.closest('.session-item-del')) return;
       loadSession(session);
@@ -353,21 +353,22 @@ async function loadSession(session) {
   try {
         const msgs = await ChatAPI.getMessages(session.id);
     msgs.forEach(msg => {
-      let sources = [], trace = [];
+      let sources = [], trace = [], uiPayload = null;
       if (msg.sources) {
         try {
           const parsed = JSON.parse(msg.sources);
           if (Array.isArray(parsed)) {
-            // Legacy format — plain array, no trace
+            // Legacy format â€” plain array, no trace
             sources = parsed;
           } else if (parsed && typeof parsed === 'object') {
-            // Current format — {sources: [], reasoning_trace: []}
+            // Current format â€” {sources: [], reasoning_trace: []}
             sources = Array.isArray(parsed.sources)         ? parsed.sources         : [];
             trace   = Array.isArray(parsed.reasoning_trace) ? parsed.reasoning_trace : [];
+            uiPayload = parsed.ui_payload && typeof parsed.ui_payload === 'object' ? parsed.ui_payload : null;
           }
         } catch { /* ignore malformed stored data */ }
       }
-      appendMessage(msg.role, msg.content, sources, trace);
+      appendMessage(msg.role, msg.content, sources, trace, uiPayload);
     });
 
 
@@ -394,7 +395,7 @@ async function deleteSession(id) {
   }
 }
 
-// ── Input bar ──────────────────────────────────────────────────────────────────
+// â”€â”€ Input bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function setupInputBar() {
   const input   = document.getElementById('chat-input');
   const sendBtn = document.getElementById('send-btn');
@@ -411,7 +412,7 @@ function setupInputBar() {
   sendBtn.addEventListener('click', sendMessage);
 }
 
-// ── KB Management Drawer ───────────────────────────────────────────────────────
+// â”€â”€ KB Management Drawer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let chatDrawerOpen = false;
 
 async function checkAndShowManageButton(kb) {
@@ -450,7 +451,7 @@ async function refreshChatDocs() {
   if (!state.currentKB) return;
   const list    = document.getElementById('chat-docs-list');
   const current = Auth.user();
-  list.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;padding:8px 0">Loading…</p>';
+  list.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;padding:8px 0">Loadingâ€¦</p>';
 
   try {
     const docs = await ChatAPI.getDocuments(state.currentKB.id);
@@ -474,7 +475,7 @@ async function refreshChatDocs() {
                         : doc.status === 'processing' ? 'badge-blue'
                         : 'badge-red';
 
-      // ── Ownership check ────────────────────────────────────────────────────
+      // â”€â”€ Ownership check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Number() handles both string "3" and number 3 from the API.
       // If uploaded_by is null (legacy doc), treat as owned by no one
       // unless the user is admin.
@@ -498,7 +499,7 @@ async function refreshChatDocs() {
            </button>`
         : `<span title="Uploaded by another user"
              style="flex-shrink:0;font-size:.72rem;color:var(--text-3);padding:0 6px;
-                    cursor:default;user-select:none">🔒</span>`;
+                    cursor:default;user-select:none">ðŸ”’</span>`;
 
       const ownerNote = !isOwner
         ? `&middot; <span style="color:var(--text-3);font-style:italic">another user</span>`
@@ -533,7 +534,7 @@ async function refreshChatDocs() {
   } catch (err) {
     list.innerHTML = `
       <p style="color:var(--danger);font-size:.82rem;padding:8px 0">
-        ⚠️ ${escapeHTML(err.message)}
+        âš ï¸ ${escapeHTML(err.message)}
       </p>`;
   }
 }
@@ -607,13 +608,13 @@ async function handleChatUpload(fileList) {
   }
   if (!files.length) return;
 
-  // Swap to loading state — keep same elements, just change content
+  // Swap to loading state â€” keep same elements, just change content
   const originalHTML = zone.innerHTML;
   const label = files.length === 1 ? files[0].name : `${files.length} files`;
   zone.innerHTML = `
     <div class="spinner" style="margin:0 auto;display:block"></div>
     <p style="margin-top:10px;color:var(--text-2);font-size:.875rem">
-      Uploading &amp; queuing "${escapeHTML(label)}"…
+      Uploading &amp; queuing "${escapeHTML(label)}"â€¦
     </p>
     <span>OCR will run automatically on images and scanned PDFs</span>`;
 
@@ -624,7 +625,7 @@ async function handleChatUpload(fileList) {
   } catch (err) {
     toast(err.message, 'error');
   } finally {
-    // Restore original HTML — dataset.bound stays true so no re-binding needed
+    // Restore original HTML â€” dataset.bound stays true so no re-binding needed
     zone.innerHTML = originalHTML;
     if (input) input.value = '';
   }
@@ -697,13 +698,13 @@ async function sendMessage() {
       .filter(t => t.trim().length > 0);
 
     // Always render assistant message
-    appendMessage('assistant', answer, sources, trace);
+    appendMessage('assistant', answer, sources, trace, (res && typeof res.ui_payload === 'object') ? res.ui_payload : null);
 
     
 
   } catch (err) {
     document.getElementById(typingId)?.remove();
-    appendMessage('assistant', `⚠️ ${err.message}`);
+    appendMessage('assistant', `âš ï¸ ${err.message}`);
     toast(err.message, 'error');
   } finally {
     state.isLoading = false;
@@ -713,8 +714,8 @@ async function sendMessage() {
   }
 }
 
-// ── Message renderer ───────────────────────────────────────────────────────────
-function appendMessage(role, content, sources = [], trace = []) {
+// â”€â”€ Message renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function appendMessage(role, content, sources = [], trace = [], uiPayload = null) {
   const inner   = getInner();
   const wrapper = getWrapper();
   if (!inner || !wrapper) return;
@@ -725,7 +726,7 @@ function appendMessage(role, content, sources = [], trace = []) {
     ? (user?.full_name || user?.username || 'U')[0].toUpperCase()
     : 'AI';
 
-  // ── Reasoning trace — sanitize each step ──────────────────────────────────
+  // â”€â”€ Reasoning trace â€” sanitize each step â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const traceHTML = (!isUser && trace && trace.length > 1)
     ? `<details class="reasoning-trace">
         <summary>
@@ -739,7 +740,7 @@ function appendMessage(role, content, sources = [], trace = []) {
         </summary>
         <ol class="trace-steps">
           ${trace.map(t => `<li>${sanitize(
-            // Only allow bold/italic in trace text — no raw HTML from model
+            // Only allow bold/italic in trace text â€” no raw HTML from model
             escapeHTML(String(t ?? ''))
               .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
               .replace(/\*(.*?)\*/g, '<em>$1</em>')
@@ -748,15 +749,15 @@ function appendMessage(role, content, sources = [], trace = []) {
        </details>`
     : '';
 
-  // ── Sources ────────────────────────────────────────────────────────────────
+  // â”€â”€ Sources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const pipelineLabel = {
-  docling:  { text: '📊 Docling',  color: '#6366f1' },
-  vlm:      { text: '👁 VLM',      color: '#f59e0b' },
-  standard: { text: '📄 Text',     color: '#10b981' },
+  docling:  { text: 'ðŸ“Š Docling',  color: '#6366f1' },
+  vlm:      { text: 'ðŸ‘ VLM',      color: '#f59e0b' },
+  standard: { text: 'ðŸ“„ Text',     color: '#10b981' },
 };
 
 const sourcesHTML = (sources && sources.length)
-  ? `<button class="sources-toggle" onclick="toggleSources(this)">…${sources.length} source${sources.length > 1 ? 's' : ''}</button>
+  ? `<button class="sources-toggle" onclick="toggleSources(this)">â€¦${sources.length} source${sources.length > 1 ? 's' : ''}</button>
      <div class="sources-list hidden">
       ${sources.map(s => {
         const pl = pipelineLabel[s.pipeline] || pipelineLabel.standard;
@@ -764,7 +765,7 @@ const sourcesHTML = (sources && sources.length)
           <div class="source-chip">
             <div class="source-chip-name">
               ${escapeHTML(s.source || 'Source')}
-              ${s.page ? `<span style="color:var(--text-3)"> · p.${escapeHTML(s.page)}</span>` : ''}
+              ${s.page ? `<span style="color:var(--text-3)"> Â· p.${escapeHTML(s.page)}</span>` : ''}
               <span style="font-size:.68rem;padding:1px 6px;border-radius:4px;
                            background:${pl.color}22;color:${pl.color};margin-left:4px">
                 ${pl.text}
@@ -775,6 +776,16 @@ const sourcesHTML = (sources && sources.length)
       }).join('')}
      </div>`
   : '';
+
+  const chartId = `chart-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  const chartHTML = (!isUser && uiPayload && uiPayload.type === 'chart')
+    ? `<div class="msg-ui-card">
+         <div class="msg-ui-title">${escapeHTML(uiPayload.title || 'Chart')}</div>
+         <div class="msg-ui-canvas-wrap">
+           <canvas id="${chartId}" height="220"></canvas>
+         </div>
+       </div>`
+    : '';
          
 
   const el = document.createElement('div');
@@ -785,6 +796,7 @@ const sourcesHTML = (sources && sources.length)
       <div class="msg-bubble prose">${isUser
         ? escapeHTML(content)
         : sanitize(renderMarkdown(content))}</div>
+      ${chartHTML}
       ${traceHTML}
       ${sourcesHTML}
       <div class="msg-time">${new Date().toLocaleTimeString([], {
@@ -793,6 +805,9 @@ const sourcesHTML = (sources && sources.length)
     </div>`;
 
   inner.appendChild(el);
+  if (!isUser && uiPayload && uiPayload.type === 'chart') {
+    renderGeneratedChart(chartId, uiPayload);
+  }
   wrapper.scrollTop = wrapper.scrollHeight;
 }
 
@@ -802,7 +817,43 @@ function toggleSources(btn) {
   list?.classList.toggle('hidden');
 }
 
-// ── Utils ──────────────────────────────────────────────────────────────────────
+function renderGeneratedChart(canvasId, uiPayload) {
+  if (typeof window.Chart === 'undefined') return;
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  const labels = Array.isArray(uiPayload.labels) ? uiPayload.labels : [];
+  const datasets = Array.isArray(uiPayload.datasets) ? uiPayload.datasets : [];
+  const palette = ['#7c3aed', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#3b82f6'];
+  const chartType = (uiPayload.chart_type === 'line') ? 'line' : 'bar';
+
+  const mappedDatasets = datasets.map((ds, idx) => ({
+    label: ds.label || `Series ${idx + 1}`,
+    data: Array.isArray(ds.data) ? ds.data : [],
+    backgroundColor: palette[idx % palette.length] + (chartType === 'bar' ? '99' : '00'),
+    borderColor: palette[idx % palette.length],
+    borderWidth: 2,
+    tension: 0.25,
+    fill: chartType !== 'line',
+  }));
+
+  new window.Chart(canvas, {
+    type: chartType,
+    data: { labels, datasets: mappedDatasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#e4e4e7' } } },
+      scales: {
+        x: { ticks: { color: '#a1a1aa' }, grid: { color: 'rgba(161,161,170,0.15)' } },
+        y: { ticks: { color: '#a1a1aa' }, grid: { color: 'rgba(161,161,170,0.15)' } },
+      },
+    },
+  });
+}
+
+// â”€â”€ Utils â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function escapeHTML(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -826,4 +877,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initAuth();
   initChatUploadZone();
 });
+
+
 

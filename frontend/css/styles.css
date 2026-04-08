@@ -803,3 +803,23 @@ tbody td { padding: 12px 16px; font-size: 0.875rem; }
 }
 .trace-steps li strong { color: var(--text-1); }
 .trace-steps li em     { color: var(--primary); font-style: normal; }
+
+/* Generated UI payload components */
+.msg-ui-card {
+  margin-top: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+}
+.msg-ui-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+.msg-ui-canvas-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 220px;
+}
