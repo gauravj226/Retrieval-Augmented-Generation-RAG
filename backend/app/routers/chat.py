@@ -105,7 +105,7 @@ async def send_message(
 
     # ── Run agentic RAG graph ─────────────────────────────────────────────────
     try:
-        answer, sources, trace = await run_agentic_rag(
+        answer, sources, trace, ui_payload = await run_agentic_rag(
             kb=kb,
             question=request.message,
             chat_history=chat_history,
@@ -139,7 +139,8 @@ async def send_message(
             # Store both sources and trace together for session replay
             sources=json.dumps({
                 "sources":         sources,
-        "reasoning_trace": trace,
+                "reasoning_trace": trace,
+                "ui_payload": ui_payload,
             }),
         ),
     ])
@@ -157,6 +158,7 @@ async def send_message(
         "answer":          answer,
         "sources":         sources,
         "reasoning_trace": trace,
+        "ui_payload":      ui_payload,
         "session_id":      session.id,
     }
 

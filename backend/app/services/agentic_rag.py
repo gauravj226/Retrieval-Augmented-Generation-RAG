@@ -48,10 +48,11 @@ from .semantic_cache import SemanticAnswerCache
 from .sota_retrieval import route_mode_for_query, score_sparse_hits
 from .vector_store_factory import get_vector_store
 from .web_search import web_search
+from .ui_payload import build_ui_payload
 
 logger = logging.getLogger(__name__)
 _cross_encoder_cache: dict = {}
-_query_cache: Dict[str, Tuple[float, Tuple[str, List[dict], List[str]]]] = {}
+_query_cache: Dict[str, Tuple[float, Tuple[str, List[dict], List[str], Optional[dict]]]] = {}
 _query_cache_lock = threading.Lock()
 _semantic_cache = SemanticAnswerCache(
     similarity_threshold=settings.SEMANTIC_CACHE_SIMILARITY,
@@ -751,7 +752,7 @@ async def run_agentic_rag(
     user_id: Optional[int] = None,
     session_id: Optional[int] = None,
     fast_mode_override: Optional[bool] = None,
-) -> Tuple[str, List[dict], List[str]]:
+) -> Tuple[str, List[dict], List[str], Optional[dict]]:
     """
     Run the agentic RAG graph.
     Returns (answer, sources, reasoning_trace).
@@ -777,7 +778,7 @@ async def run_agentic_rag(
         if sem_hit:
             answer, sources, trace, score = sem_hit
             trace = list(trace) + [f"Semantic cache hit (score={score:.2f})"]
-            return answer, sources, trace
+            return answer, sources, trace, build_ui_payload(question=question, answer=answer)
 
     memory_context = ""
     memory_store = None
@@ -845,7 +846,8 @@ async def run_agentic_rag(
                 user_message=question,
                 assistant_message=answer,
             )
-        result = (answer, sources, trace)
+        ui_payload = build_ui_payload(question=question, answer=answer)
+        result = (answer, sources, trace, ui_payload)
 
         with _query_cache_lock:
             _query_cache[cache_key] = (time.time(), result)

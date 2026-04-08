@@ -182,6 +182,7 @@ class ChatResponse(BaseModel):
     answer: str
     sources: List[Any]
     reasoning_trace: List[str] = []
+    ui_payload: Optional[dict] = None
     session_id: int
 
 
