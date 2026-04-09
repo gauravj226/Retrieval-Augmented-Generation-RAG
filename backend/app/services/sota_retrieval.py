@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Sequence
+from rank_bm25 import BM25Okapi
+
 
 
 _STOPWORDS = {
@@ -53,16 +55,24 @@ def _clone_document(doc: Any, page_content: str, metadata: dict):
 
 
 def contextualize_documents(docs: Sequence[Any]) -> List[Any]:
-    texts = [getattr(d, "page_content", "") for d in docs]
-    summary = build_document_summary(texts, max_sentences=2)
-    output: List[Any] = []
+    # Group by source document
+    from collections import defaultdict
+    groups = defaultdict(list)
     for doc in docs:
-        raw = getattr(doc, "page_content", "")
-        meta = dict(getattr(doc, "metadata", {}) or {})
-        meta["raw"] = raw
-        meta["context_summary"] = summary
-        contextualized = f"Document context: {summary}\n\nChunk:\n{raw}".strip()
-        output.append(_clone_document(doc, contextualized, meta))
+        src = (getattr(doc, "metadata", {}) or {}).get("source", "__default__")
+        groups[src].append(doc)
+    
+    output = []
+    for src, group_docs in groups.items():
+        texts = [getattr(d, "page_content", "") for d in group_docs]
+        summary = build_document_summary(texts, max_sentences=2)  # per-doc summary
+        for doc in group_docs:
+            raw = getattr(doc, "page_content", "")
+            meta = dict(getattr(doc, "metadata", {}) or {})
+            meta["raw"] = raw
+            meta["context_summary"] = summary
+            contextualized = f"Document context: {summary}\n\nChunk:\n{raw}".strip()
+            output.append(_clone_document(doc, contextualized, meta))
     return output
 
 
@@ -81,21 +91,29 @@ def route_mode_for_query(query: str) -> str:
     return "retrieve"
 
 
-def score_sparse_hits(query: str, docs: Iterable[Any], top_k: int = 8) -> List[SparseHit]:
+def score_sparse_hits(query: str, docs, top_k: int = 8) -> List[SparseHit]:
     q_terms = _tokenise(query)
     if not q_terms:
         return []
-    scored: List[SparseHit] = []
+    
+    corpus = []
     for doc in docs:
         content = str(getattr(doc, "page_content", "") or "")
-        meta = dict(getattr(doc, "metadata", {}) or {})
-        source = str(meta.get("source", "")).lower()
-        corpus = (content + "\n" + str(meta.get("raw", ""))).lower()
-        filename_hits = sum(1 for t in q_terms if t in source)
-        token_hits = sum(corpus.count(t) for t in q_terms)
-        exact_id_boost = 2 if re.search(r"\b[a-z]{2,}\-\d{2,}\b", query.lower()) else 0
-        score = (filename_hits * 6) + min(token_hits, 20) + exact_id_boost
+        raw = str((getattr(doc, "metadata", {}) or {}).get("raw", ""))
+        corpus.append(_tokenise(content + " " + raw))
+    
+    bm25 = BM25Okapi(corpus)
+    scores = bm25.get_scores(q_terms)
+    
+    scored = []
+    for i, (doc, score) in enumerate(zip(docs, scores)):
         if score > 0:
-            scored.append(SparseHit(content=content, metadata=meta, score=float(score)))
+            meta = dict(getattr(doc, "metadata", {}) or {})
+            scored.append(SparseHit(
+                content=str(getattr(doc, "page_content", "")),
+                metadata=meta,
+                score=float(score)
+            ))
+    
     scored.sort(key=lambda s: s.score, reverse=True)
     return scored[:top_k]

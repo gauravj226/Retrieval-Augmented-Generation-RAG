@@ -1,17 +1,14 @@
 import logging
-import uuid
 from typing import Any, List, Optional, Tuple
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferWindowMemory
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
 from sqlalchemy.orm import Session
 import torch
+
 
 from ..config import settings
 from ..models.models import KnowledgeBase, Personality
@@ -19,6 +16,7 @@ from .document_processor import process_file
 from .graph_memory import GraphMemoryStore
 from .sota_retrieval import contextualize_documents
 from .vector_store_factory import get_vector_store
+
 
 logger = logging.getLogger(__name__)
 _chroma_client = None
@@ -120,9 +118,15 @@ def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Any):
     top_k    = kb.top_k_docs or 4
     fetch_k  = max(kb.mmr_fetch_k or top_k * 4, top_k + 1)
     lmb      = float(kb.mmr_lambda or 0.7)
+    score_threshold = float(kb.score_threshold or 0.35)
     return vectorstore.as_retriever(
         search_type="mmr",
-        search_kwargs={"k": top_k, "fetch_k": fetch_k, "lambda_mult": lmb},
+        search_kwargs={
+            "k": top_k,
+            "fetch_k": fetch_k,
+            "lambda_mult": lmb,
+            "score_threshold": score_threshold,
+        },
     )
 
 
@@ -229,6 +233,8 @@ async def _standard_chunks(
     return await process_file(
         file_path=file_path,
         original_filename=original_filename,
+        chunk_size=kb.chunk_size or 800,
+        chunk_overlap=kb.chunk_overlap or 120,
         metadata={
             "source": original_filename,
             "type": "text",
@@ -243,40 +249,15 @@ async def query_kb(
     chat_history: Optional[List[Tuple[str, str]]],
     db: Session,
 ) -> Tuple[str, List[dict]]:
-    vectorstore   = get_vectorstore(kb)
-    retriever     = get_mmr_retriever(kb, vectorstore)
-    llm           = get_llm(kb)
-    system_prompt = resolve_system_prompt(kb, db)
+    # Keep compatibility for call sites that still use query_kb, but always use agentic flow.
+    from .agentic_rag import run_agentic_rag
 
-    memory = ConversationBufferWindowMemory(
-        memory_key="chat_history", return_messages=True, k=5, output_key="answer"
+    answer, sources, _trace, _ui_payload = await run_agentic_rag(
+        kb=kb,
+        question=question,
+        chat_history=chat_history,
+        db=db,
     )
-    if chat_history:
-        for human, ai in chat_history[-5:]:
-            memory.chat_memory.add_user_message(human)
-            memory.chat_memory.add_ai_message(ai)
-
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory,
-        return_source_documents=True,
-        verbose=False,
-    )
-
-    result = chain({"question": f"[System: {system_prompt}]\n\n{question}"})
-    answer = result["answer"]
-
-    sources, seen = [], set()
-    for doc in result.get("source_documents", []):
-        src = doc.metadata.get("source", "Unknown")
-        if src not in seen:
-            seen.add(src)
-            sources.append({
-                "source": src,
-                "content": doc.page_content[:200] + ("..." if len(doc.page_content) > 200 else ""),
-            })
-
     return answer, sources
 
 

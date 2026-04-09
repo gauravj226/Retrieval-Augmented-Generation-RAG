@@ -160,9 +160,10 @@ async def create_kb(
 
     dump = data.model_dump()
     kb = KnowledgeBase(
-        **{k: v for k, v in dump.items() if k not in ("temperature", "mmr_lambda")},
+        **{k: v for k, v in dump.items() if k not in ("temperature", "mmr_lambda", "score_threshold")},
         temperature=str(data.temperature),
         mmr_lambda=str(data.mmr_lambda),
+        score_threshold=str(data.score_threshold),
         chroma_collection=collection,
         created_by=admin.id,
     )
@@ -191,7 +192,7 @@ async def update_kb(
         raise HTTPException(status_code=404, detail="Not found")
 
     for field, value in data.model_dump(exclude_unset=True).items():
-        if field in ("temperature", "mmr_lambda"):
+        if field in ("temperature", "mmr_lambda", "score_threshold"):
             setattr(kb, field, str(value))
         else:
             setattr(kb, field, value)

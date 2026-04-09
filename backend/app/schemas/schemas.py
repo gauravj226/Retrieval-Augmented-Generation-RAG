@@ -119,6 +119,10 @@ class KBCreate(BaseModel):
     top_k_docs: int = 4
     mmr_fetch_k: int = 16
     mmr_lambda: float = 0.7
+    score_threshold: float = 0.35
+    memory_window: int = 5
+    chunk_size: int = 800
+    chunk_overlap: int = 120
 
 
 class KBUpdate(BaseModel):
@@ -132,6 +136,10 @@ class KBUpdate(BaseModel):
     top_k_docs: Optional[int] = None
     mmr_fetch_k: Optional[int] = None
     mmr_lambda: Optional[float] = None
+    score_threshold: Optional[float] = None
+    memory_window: Optional[int] = None
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
     is_active: Optional[bool] = None
 
 
@@ -149,6 +157,10 @@ class KBResponse(BaseModel):
     top_k_docs: int
     mmr_fetch_k: int
     mmr_lambda: str
+    score_threshold: str
+    memory_window: int
+    chunk_size: int
+    chunk_overlap: int
     is_active: bool
     created_at: datetime
     document_count: int = 0

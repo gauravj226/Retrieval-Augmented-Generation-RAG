@@ -109,6 +109,10 @@ class KnowledgeBase(Base):
     top_k_docs       = Column(Integer, default=4)
     mmr_fetch_k      = Column(Integer, default=16)    # fetch_k for MMR
     mmr_lambda       = Column(String, default="0.7")  # 0=diversity, 1=relevance
+    score_threshold  = Column(String, default="0.35")
+    memory_window    = Column(Integer, default=5)
+    chunk_size       = Column(Integer, default=800)
+    chunk_overlap    = Column(Integer, default=120)
 
     chroma_collection = Column(String, unique=True, nullable=False)
     is_active        = Column(Boolean, default=True)
