@@ -11,6 +11,12 @@ const MAX_UPLOAD_FILES = 5;
 const MAX_UPLOAD_FILE_MB = 15;
 const MAX_UPLOAD_FILE_BYTES = MAX_UPLOAD_FILE_MB * 1024 * 1024;
 const FAST_MODE_STORAGE_KEY = 'rag_fast_mode';
+const THEME_STORAGE_KEY = 'theme';
+
+const THEME_ICONS = {
+  dark: '<path d="M21 12.79A9 9 0 1 1 11.21 3c.5 0 .9.4.88.9A7 7 0 0 0 20.1 11.9c.5-.02.9.38.9.89z"/>',
+  light: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>',
+};
 
 //  DOM helpers 
 // Resolve message container across legacy and current markup.
@@ -199,6 +205,59 @@ async function initApp() {
   setupInputBar();
 }
 
+function getTheme() {
+  return document.documentElement.getAttribute('data-theme') || 'light';
+}
+
+function setTheme(theme) {
+  const root = document.documentElement;
+  root.setAttribute('data-theme', theme);
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+  updateThemeIcon(theme);
+}
+
+function updateThemeIcon(theme) {
+  const icon = document.getElementById('theme-icon');
+  if (!icon) return;
+  icon.innerHTML = theme === 'dark' ? THEME_ICONS.dark : THEME_ICONS.light;
+}
+
+function initThemeToggle() {
+  const toggle = document.getElementById('theme-toggle');
+  if (!toggle || toggle.dataset.bound === 'true') return;
+
+  toggle.dataset.bound = 'true';
+  const savedTheme = localStorage.getItem(THEME_STORAGE_KEY) || 'light';
+  setTheme(savedTheme);
+
+  toggle.addEventListener('click', () => {
+    const next = getTheme() === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+  });
+}
+
+function closeHelpModal() {
+  document.getElementById('help-modal')?.classList.add('hidden');
+}
+
+function initHelpModal() {
+  const helpBtn = document.getElementById('help-btn');
+  const helpModal = document.getElementById('help-modal');
+  const closeBtn = document.getElementById('help-close-btn');
+  const doneBtn = document.getElementById('help-done-btn');
+  if (!helpBtn || !helpModal || helpBtn.dataset.bound === 'true') return;
+
+  helpBtn.dataset.bound = 'true';
+  helpBtn.addEventListener('click', () => {
+    helpModal.classList.remove('hidden');
+  });
+  closeBtn?.addEventListener('click', closeHelpModal);
+  doneBtn?.addEventListener('click', closeHelpModal);
+  helpModal.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeHelpModal();
+  });
+}
+
 function getFastModeEnabled() {
   return localStorage.getItem(FAST_MODE_STORAGE_KEY) === '1';
 }
@@ -286,7 +345,7 @@ function renderSessions() {
     return;
   }
 
-  state.sessions.forEach(session => {
+  state.sessions.forEach((session, index) => {
     //  Use <div role="button"> as outer  never nest <button> in <button> 
     const item = document.createElement('div');
     item.className   = `session-item ${state.currentSession?.id === session.id ? 'active' : ''}`;
@@ -332,6 +391,7 @@ function renderSessions() {
       e.stopPropagation();
       deleteSession(session.id);
     });
+    item.style.animationDelay = `${Math.min(index * 40, 280)}ms`;
 
     list.appendChild(item);
   });
@@ -824,7 +884,12 @@ function renderGeneratedChart(canvasId, uiPayload) {
 
   const labels = Array.isArray(uiPayload.labels) ? uiPayload.labels : [];
   const datasets = Array.isArray(uiPayload.datasets) ? uiPayload.datasets : [];
-  const palette = ['#7c3aed', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#3b82f6'];
+  const styles = getComputedStyle(document.documentElement);
+  const primary = styles.getPropertyValue('--primary').trim() || '#2563eb';
+  const accent = styles.getPropertyValue('--accent').trim() || '#0891b2';
+  const text2 = styles.getPropertyValue('--text-2').trim() || '#4b5563';
+  const grid = getTheme() === 'dark' ? 'rgba(179,179,194,0.2)' : 'rgba(75,85,99,0.12)';
+  const palette = [primary, accent, '#10b981', '#f59e0b', '#ef4444', '#3b82f6'];
   const chartType = (uiPayload.chart_type === 'line') ? 'line' : 'bar';
 
   const mappedDatasets = datasets.map((ds, idx) => ({
@@ -844,10 +909,10 @@ function renderGeneratedChart(canvasId, uiPayload) {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: '#e4e4e7' } } },
+      plugins: { legend: { labels: { color: text2 } } },
       scales: {
-        x: { ticks: { color: '#a1a1aa' }, grid: { color: 'rgba(161,161,170,0.15)' } },
-        y: { ticks: { color: '#a1a1aa' }, grid: { color: 'rgba(161,161,170,0.15)' } },
+        x: { ticks: { color: text2 }, grid: { color: grid } },
+        y: { ticks: { color: text2 }, grid: { color: grid } },
       },
     },
   });
@@ -874,6 +939,8 @@ function formatSize(bytes) {
 
 
 document.addEventListener('DOMContentLoaded', () => {
+  initThemeToggle();
+  initHelpModal();
   initAuth();
   initChatUploadZone();
 });
