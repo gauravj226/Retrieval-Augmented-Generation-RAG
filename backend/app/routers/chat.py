@@ -1,4 +1,5 @@
 import json
+import time
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,8 +15,27 @@ from ..schemas.schemas import (
 )
 from ..services.agentic_rag import run_agentic_rag
 from ..services.audit import audit_event
+from ..services.long_term_memory import LongTermMemoryStore
+from ..config import settings
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+
+
+def _audit_chunks_from_sources(sources: list, *, limit: int = 12) -> list:
+    rows = []
+    for src in (sources or [])[:limit]:
+        if not isinstance(src, dict):
+            continue
+        rows.append(
+            {
+                "source": str(src.get("source", "Unknown")),
+                "page": str(src.get("page", "")),
+                "pipeline": str(src.get("pipeline", "standard")),
+                "type": str(src.get("type", "text")),
+                "content_preview": str(src.get("content", ""))[:320],
+            }
+        )
+    return rows
 
 
 @router.get("/knowledge-bases")
@@ -82,6 +102,13 @@ async def send_message(
         db.add(session)
         db.commit()
         db.refresh(session)
+        # Ensure a truly clean session memory context (prevents stale file reuse
+        # when DB ids are recycled after resets).
+        if settings.ENABLE_LONG_TERM_MEMORY:
+            LongTermMemoryStore(settings.MEMORY_STORE_DIR).clear(
+                user_id=int(current_user.id),
+                session_id=int(session.id),
+            )
         audit_event(
             "chat.session_created",
             actor=current_user,
@@ -104,6 +131,7 @@ async def send_message(
     ]
 
     # ── Run agentic RAG graph ─────────────────────────────────────────────────
+    started = time.perf_counter()
     try:
         answer, sources, trace, ui_payload = await run_agentic_rag(
             kb=kb,
@@ -113,6 +141,19 @@ async def send_message(
             user_id=current_user.id,
             session_id=session.id,
             fast_mode_override=request.fast_mode,
+        )
+        audit_event(
+            "chat.retrieval_chunks_logged",
+            actor=current_user,
+            target_type="knowledge_base",
+            target_id=kb.id,
+            details={
+                "session_id": session.id,
+                "fast_mode": bool(request.fast_mode),
+                "query": request.message,
+                "chunk_count": len(sources or []),
+                "chunks": _audit_chunks_from_sources(sources, limit=12),
+            },
         )
     except Exception as e:
         audit_event(
@@ -145,12 +186,18 @@ async def send_message(
         ),
     ])
     db.commit()
+    latency_ms = int((time.perf_counter() - started) * 1000)
     audit_event(
         "chat.message_sent",
         actor=current_user,
         target_type="chat_session",
         target_id=session.id,
-        details={"kb_id": kb.id, "sources_count": len(sources)},
+        details={
+            "kb_id": kb.id,
+            "sources_count": len(sources),
+            "fast_mode": bool(request.fast_mode),
+            "latency_ms": latency_ms,
+        },
     )
 
     # ── Return trace explicitly in response ───────────────────────────────────
