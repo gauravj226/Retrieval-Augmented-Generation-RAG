@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     OLLAMA_HOST: str = "ollama"
     OLLAMA_PORT: int = 11434
     DEFAULT_LLM_MODEL: str = "llama3.2:3b"
+    GRADER_LLM_MODEL: Optional[str] = None
 
     UPLOAD_DIR: str = "/app/uploads"
     MAX_UPLOAD_FILES: int = 5
@@ -49,6 +50,8 @@ class Settings(BaseSettings):
     VLM_DPI: int = 120
     VLM_CONCURRENCY: int = 2
     VLM_TIMEOUT_SEC: int = 75
+    MAX_DOCS_FOR_GRADING: int = 6
+    MAX_DOCS_FOR_GENERATION: int = 6
     AUDIT_LOG_PATH: str = "/app/logs/audit.log"
     AUDIT_LOG_LEVEL: str = "INFO"
 
