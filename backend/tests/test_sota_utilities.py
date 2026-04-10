@@ -5,6 +5,7 @@ from pathlib import Path
 from app.services.graph_memory import GraphMemoryStore
 from app.services.long_term_memory import LongTermMemoryStore
 from app.services.semantic_cache import SemanticAnswerCache
+from app.services.bm25_index import HybridBM25Index
 from app.services.sota_retrieval import contextualize_documents, route_mode_for_query
 
 TEST_TMP_ROOT = Path(__file__).parent / ".tmp"
@@ -42,6 +43,33 @@ class TestSotaUtilities(unittest.TestCase):
         self.assertIsNotNone(hit)
         self.assertIn("self-service", hit[0].lower())
 
+    def test_semantic_cache_respects_scope(self):
+        cache = SemanticAnswerCache(similarity_threshold=0.75, ttl_seconds=120, max_entries=10)
+        cache.put(
+            "how to change the box expiry link setting",
+            "Session A answer",
+            kb_id=3,
+            mode="fast",
+            scope="u:1:s:33",
+        )
+
+        hit_same_scope = cache.get(
+            "how to change box expiry setting",
+            kb_id=3,
+            mode="fast",
+            scope="u:1:s:33",
+        )
+        hit_other_scope = cache.get(
+            "how to change box expiry setting",
+            kb_id=3,
+            mode="fast",
+            scope="u:1:s:34",
+        )
+
+        self.assertIsNotNone(hit_same_scope)
+        self.assertIn("session a answer", hit_same_scope[0].lower())
+        self.assertIsNone(hit_other_scope)
+
     def test_long_term_memory_persists_preferences(self):
         td = TEST_TMP_ROOT / "memory_case"
         td.mkdir(parents=True, exist_ok=True)
@@ -69,6 +97,47 @@ class TestSotaUtilities(unittest.TestCase):
         expansions = graph.expand_query(kb_id=1, query="ServiceA")
 
         self.assertIn("serviceb", [e.lower() for e in expansions])
+
+    def test_bm25_index_ingest_time_search(self):
+        td = TEST_TMP_ROOT / "bm25_case"
+        td.mkdir(parents=True, exist_ok=True)
+        idx = HybridBM25Index(base_dir=str(td))
+        docs = [
+            MiniDocument(
+                page_content="By default, Box expiry links can be changed from shared link settings.",
+                metadata={"source": "box.pdf", "doc_id": 10, "raw": "Box expiry links"},
+            ),
+            MiniDocument(
+                page_content="Email quarantine login uses Barracuda web portal.",
+                metadata={"source": "mail.pdf", "doc_id": 11, "raw": "quarantine"},
+            ),
+        ]
+        idx.upsert_chunks(kb_id=3, docs=docs)
+
+        hits = idx.search(kb_id=3, query="how to change box expiry link", top_k=2)
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].metadata.get("source"), "box.pdf")
+
+    def test_bm25_index_delete_document(self):
+        td = TEST_TMP_ROOT / "bm25_delete_case"
+        td.mkdir(parents=True, exist_ok=True)
+        idx = HybridBM25Index(base_dir=str(td))
+        docs = [
+            MiniDocument(
+                page_content="Map network drive U from This PC.",
+                metadata={"source": "u-drive.pdf", "doc_id": 20, "raw": "Map network drive U"},
+            ),
+            MiniDocument(
+                page_content="Map network drive Q from This PC.",
+                metadata={"source": "q-drive.pdf", "doc_id": 21, "raw": "Map network drive Q"},
+            ),
+        ]
+        idx.upsert_chunks(kb_id=5, docs=docs)
+        removed = idx.remove_document(kb_id=5, doc_id=20)
+        hits = idx.search(kb_id=5, query="map u drive", top_k=2)
+
+        self.assertGreaterEqual(removed, 1)
+        self.assertFalse(any(h.metadata.get("source") == "u-drive.pdf" for h in hits))
 
 
 if __name__ == "__main__":

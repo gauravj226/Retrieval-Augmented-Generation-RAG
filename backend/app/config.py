@@ -26,9 +26,13 @@ class Settings(BaseSettings):
     MAX_UPLOAD_FILE_MB: int = 15
     MAX_UPLOAD_BATCH_MB: int = 50
     HYBRID_LEXICAL_MAX_DOCS: int = 2000
+    HYBRID_BM25_DIR: str = "/app/data/hybrid_bm25"
     ENABLE_CROSS_ENCODER_RERANK: bool = False
     CROSS_ENCODER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     FAST_MODE: bool = True
+    FAST_MODE_MAX_TOKENS: int = 320
+    FAST_MODE_CONTEXT_CHARS_PER_DOC: int = 900
+    QUALITY_MODE_CONTEXT_CHARS_PER_DOC: int = 2200
     QUERY_CACHE_TTL_SEC: int = 120
     QUERY_CACHE_MAX: int = 256
     ENABLE_SEMANTIC_CACHE: bool = True
