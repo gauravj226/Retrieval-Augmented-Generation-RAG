@@ -1,4 +1,4 @@
-﻿//  State 
+//  State 
 const state = {
   kbs: [],
   sessions: [],
@@ -66,7 +66,7 @@ function sanitize(html) {
     doc.querySelectorAll(tag).forEach(el => el.remove());
   });
 
-  // Strip event handler attributes (onclick, onerror, onload â€¦)
+  // Strip event handler attributes (onclick, onerror, onload …)
   doc.querySelectorAll('*').forEach(el => {
     [...el.attributes].forEach(attr => {
       if (/^on\w+/i.test(attr.name) ||
@@ -345,7 +345,7 @@ function renderSessions() {
     return;
   }
 
-  state.sessions.forEach((session, index) => {
+  state.sessions.forEach((session) => {
     //  Use <div role="button"> as outer  never nest <button> in <button> 
     const item = document.createElement('div');
     item.className   = `session-item ${state.currentSession?.id === session.id ? 'active' : ''}`;
@@ -374,7 +374,7 @@ function renderSessions() {
         </svg>
       </button>`;
 
-    // Click outer div â†’ load session
+    // Click outer div → load session
     item.addEventListener('click', (e) => {
       if (e.target.closest('.session-item-del')) return;
       loadSession(session);
@@ -391,8 +391,6 @@ function renderSessions() {
       e.stopPropagation();
       deleteSession(session.id);
     });
-    item.style.animationDelay = `${Math.min(index * 40, 280)}ms`;
-
     list.appendChild(item);
   });
 }
@@ -511,7 +509,7 @@ async function refreshChatDocs() {
   if (!state.currentKB) return;
   const list    = document.getElementById('chat-docs-list');
   const current = Auth.user();
-  list.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;padding:8px 0">Loadingâ€¦</p>';
+  list.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;padding:8px 0">Loading…</p>';
 
   try {
     const docs = await ChatAPI.getDocuments(state.currentKB.id);
@@ -559,7 +557,7 @@ async function refreshChatDocs() {
            </button>`
         : `<span title="Uploaded by another user"
              style="flex-shrink:0;font-size:.72rem;color:var(--text-3);padding:0 6px;
-                    cursor:default;user-select:none">”’</span>`;
+                    cursor:default;user-select:none">��</span>`;
 
       const ownerNote = !isOwner
         ? `&middot; <span style="color:var(--text-3);font-style:italic">another user</span>`
@@ -594,7 +592,7 @@ async function refreshChatDocs() {
   } catch (err) {
     list.innerHTML = `
       <p style="color:var(--danger);font-size:.82rem;padding:8px 0">
-        âš ï¸ ${escapeHTML(err.message)}
+        ⚠️ ${escapeHTML(err.message)}
       </p>`;
   }
 }
@@ -674,7 +672,7 @@ async function handleChatUpload(fileList) {
   zone.innerHTML = `
     <div class="spinner" style="margin:0 auto;display:block"></div>
     <p style="margin-top:10px;color:var(--text-2);font-size:.875rem">
-      Uploading &amp; queuing "${escapeHTML(label)}"â€¦
+      Uploading &amp; queuing "${escapeHTML(label)}"…
     </p>
     <span>OCR will run automatically on images and scanned PDFs</span>`;
 
@@ -764,7 +762,7 @@ async function sendMessage() {
 
   } catch (err) {
     document.getElementById(typingId)?.remove();
-    appendMessage('assistant', `âš ï¸ ${err.message}`);
+    appendMessage('assistant', `⚠️ ${err.message}`);
     toast(err.message, 'error');
   } finally {
     state.isLoading = false;
@@ -812,12 +810,12 @@ function appendMessage(role, content, sources = [], trace = [], uiPayload = null
   //  Sources 
   const pipelineLabel = {
   docling:  { text: 'Docling',  color: '#6366f1' },
-  vlm:      { text: '‘ VLM',      color: '#f59e0b' },
+  vlm:      { text: '�� VLM',      color: '#f59e0b' },
   standard: { text: 'Text',     color: '#10b981' },
 };
 
 const sourcesHTML = (sources && sources.length)
-  ? `<button class="sources-toggle" onclick="toggleSources(this)">â€¦${sources.length} source${sources.length > 1 ? 's' : ''}</button>
+  ? `<button class="sources-toggle" onclick="toggleSources(this)">…${sources.length} source${sources.length > 1 ? 's' : ''}</button>
      <div class="sources-list hidden">
       ${sources.map(s => {
         const pl = pipelineLabel[s.pipeline] || pipelineLabel.standard;
@@ -825,7 +823,7 @@ const sourcesHTML = (sources && sources.length)
           <div class="source-chip">
             <div class="source-chip-name">
               ${escapeHTML(s.source || 'Source')}
-              ${s.page ? `<span style="color:var(--text-3)"> Â· p.${escapeHTML(s.page)}</span>` : ''}
+              ${s.page ? `<span style="color:var(--text-3)"> · p.${escapeHTML(s.page)}</span>` : ''}
               <span style="font-size:.68rem;padding:1px 6px;border-radius:4px;
                            background:${pl.color}22;color:${pl.color};margin-left:4px">
                 ${pl.text}
@@ -944,6 +942,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initAuth();
   initChatUploadZone();
 });
+
 
 
 
