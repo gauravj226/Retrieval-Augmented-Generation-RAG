@@ -32,7 +32,22 @@ class SparseHit:
 
 
 def _tokenise(text: str) -> List[str]:
-    return [t for t in re.findall(r"[a-zA-Z0-9_\-]{2,}", (text or "").lower()) if t not in _STOPWORDS]
+    src = (text or "").lower()
+    tokens = [t for t in re.findall(r"[a-zA-Z0-9_\-]{2,}", src) if t not in _STOPWORDS]
+    # Preserve discriminative entities so sparse retrieval can separate close intents.
+    tokens.extend([f"drive_{letter}" for letter in re.findall(r"\b([a-z])\s*:?\s*drive\b", src)])
+    tokens.extend([f"win_{ver}" for ver in re.findall(r"\bwindows\s*(10|11)\b", src)])
+    tokens.extend([f"path_{p}" for p in re.findall(r"(\\\\[a-z0-9._$-]+\\[a-z0-9._$\\-]+)", src)])
+    tokens.extend(
+        [
+            f"id_{i}"
+            for i in re.findall(
+                r"\b(?:[a-z]{2,}[._-]?\d+[a-z0-9._-]*|\d+[a-z][a-z0-9._-]*)\b",
+                src,
+            )
+        ]
+    )
+    return tokens
 
 
 def build_document_summary(texts: Sequence[str], max_sentences: int = 2) -> str:

@@ -84,10 +84,14 @@ def _cache_key(
     mode = "fast" if fast_mode else "quality"
     return f"{kb.id}:{mode}:{_normalise_query(question)}:{_history_tail_hash(chat_history)}"
 # Helper: build LLM
-def _llm(kb: KnowledgeBase, temperature: float = 0.0) -> ChatOllama:
+def _llm(
+    kb: KnowledgeBase,
+    temperature: float = 0.0,
+    model_override: Optional[str] = None,
+) -> ChatOllama:
     """Return a ChatOllama instance. temperature=0 for graders/routers."""
     return ChatOllama(
-        model=kb.llm_model or settings.DEFAULT_LLM_MODEL,
+        model=model_override or kb.llm_model or settings.DEFAULT_LLM_MODEL,
         base_url=f"http://{settings.OLLAMA_HOST}:{settings.OLLAMA_PORT}",
         temperature=temperature,
         num_predict=kb.max_tokens,
@@ -96,7 +100,11 @@ def _llm(kb: KnowledgeBase, temperature: float = 0.0) -> ChatOllama:
 
 def _grade_llm(kb: KnowledgeBase) -> ChatOllama:
     """Deterministic LLM for binary graders."""
-    return _llm(kb, temperature=0.0)
+    return _llm(
+        kb,
+        temperature=0.0,
+        model_override=(getattr(settings, "GRADER_LLM_MODEL", None) or None),
+    )
 
 
 def _gen_llm(kb: KnowledgeBase) -> ChatOllama:
@@ -149,6 +157,75 @@ def _expand_query(query: str) -> List[str]:
     return expanded
 
 
+def _extract_focus_entities(text: str) -> dict[str, set[str]]:
+    """
+    Extract discriminative entities from user query/doc text.
+    These entities are used to reduce retrieval collisions where generic terms
+    overlap but core intent differs (e.g., U drive vs J drive, Windows 10 vs 11).
+    """
+    raw = text or ""
+    lower = raw.lower()
+    entities: dict[str, set[str]] = {
+        "drive": set(),
+        "windows": set(),
+        "path": set(),
+        "id": set(),
+        "acronym": set(),
+    }
+
+    entities["drive"].update(re.findall(r"\b([a-z])\s*:?\s*drive\b", lower))
+    entities["windows"].update(re.findall(r"\bwindows\s*(10|11)\b", lower))
+    entities["path"].update(re.findall(r"(\\\\[a-z0-9._$-]+\\[a-z0-9._$\\-]+)", lower))
+
+    id_matches = re.findall(
+        r"\b(?:[a-z]{2,}[._-]?\d+[a-z0-9._-]*|\d+[a-z][a-z0-9._-]*)\b",
+        lower,
+    )
+    entities["id"].update(id_matches)
+
+    # Acronyms are extracted from original-case text.
+    entities["acronym"].update([a.lower() for a in re.findall(r"\b[A-Z]{2,8}\b", raw)])
+
+    return {k: v for k, v in entities.items() if v}
+
+
+def _entity_alignment_score(
+    query_entities: dict[str, set[str]],
+    doc_entities: dict[str, set[str]],
+    source: str,
+) -> int:
+    if not query_entities:
+        return 0
+
+    weights = {
+        "drive": 24,
+        "windows": 18,
+        "path": 14,
+        "id": 12,
+        "acronym": 10,
+    }
+    score = 0
+    source_l = (source or "").lower()
+
+    for family, q_vals in query_entities.items():
+        d_vals = doc_entities.get(family, set())
+        if not d_vals:
+            continue
+
+        overlap = q_vals.intersection(d_vals)
+        if overlap:
+            score += weights.get(family, 8) * len(overlap)
+            # Extra trust when filename itself encodes the same discriminative entity.
+            for val in overlap:
+                if val and re.search(rf"\b{re.escape(val)}\b", source_l):
+                    score += max(4, weights.get(family, 8) // 2)
+        else:
+            # Family present but contradictory values -> penalize heavily.
+            score -= max(8, int(weights.get(family, 8) * 0.7))
+
+    return score
+
+
 def _keyword_rerank(docs: List[Document], query: str, keep: int) -> List[Document]:
     """
     Lightweight lexical reranker on top of vector retrieval:
@@ -159,15 +236,14 @@ def _keyword_rerank(docs: List[Document], query: str, keep: int) -> List[Documen
         t for t in re.findall(r"[a-zA-Z0-9]{3,}", query.lower())
         if t not in {"what", "which", "with", "from", "about", "policy"}
     ]
-    if not terms:
-        return docs[:keep]
-
+    query_entities = _extract_focus_entities(query)
     scored = []
     for doc in docs:
         src = str(doc.metadata.get("source", "")).lower()
         text = doc.page_content.lower()
         raw = str(doc.metadata.get("raw", "")).lower()
         corpus = f"{text}\n{raw}" if raw else text
+        doc_entities = _extract_focus_entities(f"{src}\n{corpus}")
 
         filename_hits = sum(1 for t in terms if t in src)
         content_hits = sum(corpus.count(t) for t in terms)
@@ -178,7 +254,14 @@ def _keyword_rerank(docs: List[Document], query: str, keep: int) -> List[Documen
             if "\\\\" in corpus or "net use " in corpus:
                 path_hint = 3
 
-        score = (filename_hits * 5) + min(content_hits, 8) + path_hint
+        entity_hint = _entity_alignment_score(query_entities, doc_entities, src)
+
+        score = (filename_hits * 5) + min(content_hits, 8) + path_hint + entity_hint
+        # Persist score for downstream confidence estimation / UI hints.
+        try:
+            doc.metadata["retrieval_score"] = float(score)
+        except Exception:
+            pass
         scored.append((score, doc))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -253,8 +336,6 @@ def _cross_encoder_rerank(query: str, docs: List[Document], keep: int) -> List[D
         return docs[:keep]
 # Node 1 — route_query
 def make_route_query(kb: KnowledgeBase):
-    llm = _grade_llm(kb)
-
     async def route_query(state: AgentState) -> dict:
         question = state["question"]
         mode_hint = route_mode_for_query(question)
@@ -272,6 +353,7 @@ def make_route_query(kb: KnowledgeBase):
                 "reasoning_trace": [f"Route decision: **{decision}** ({mode_hint})"],
             }
 
+        llm = _grade_llm(kb)
         prompt = f"""You are a query router for a knowledge base in the '{kb.department}' department.
 KB description: {kb.description or 'General purpose knowledge base'}
 
@@ -313,19 +395,25 @@ def make_retrieve(kb: KnowledgeBase):
             "lambda_mult": float(kb.mmr_lambda or 0.7),
         },
     )
+    fast_retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": top_k},
+    )
 
     async def retrieve(state: AgentState) -> dict:
+        fast_mode = bool(state.get("fast_mode"))
         query = state.get("rewritten_query") or state["question"]
-        queries = [query] if bool(state.get("fast_mode")) else _expand_query(query)
+        queries = [query] if fast_mode else _expand_query(query)
         route_mode = state.get("route_mode", "retrieve")
         if settings.ENABLE_GRAPH_RAG and route_mode == "graph":
             graph_terms = GraphMemoryStore(settings.GRAPH_MEMORY_DIR).expand_query(kb_id=kb.id, query=query)
             queries.extend(graph_terms[:4])
 
+        active_retriever = fast_retriever if fast_mode else retriever
         merged: List[Document] = []
         seen = set()
         for q in queries:
-            docs = await retriever.ainvoke(q)
+            docs = await active_retriever.ainvoke(q)
             for d in docs:
                 key = (
                     str(d.metadata.get("source", "")),
@@ -336,7 +424,7 @@ def make_retrieve(kb: KnowledgeBase):
                 seen.add(key)
                 merged.append(d)
 
-        lexical = [] if bool(state.get("fast_mode")) else _lexical_candidates(kb, query, limit=max(top_k * 3, 6))
+        lexical = [] if fast_mode else _lexical_candidates(kb, query, limit=max(top_k * 3, 6))
 
         all_docs = []
         seen2 = set()
@@ -350,14 +438,47 @@ def make_retrieve(kb: KnowledgeBase):
             seen2.add(key)
             all_docs.append(d)
 
-        reranked = _keyword_rerank(all_docs, query, keep=max(top_k * 4, 10))
-        if route_mode == "sparse":
-            sparse_hits = score_sparse_hits(query, reranked, top_k=max(top_k * 3, 8))
+        quality_keep = top_k if fast_mode else max(top_k * 2, 6)
+        reranked = _keyword_rerank(all_docs, query, keep=quality_keep)
+        query_entities = _extract_focus_entities(query)
+        top_keyword_score = 0.0
+        entity_match_count = 0
+        for d in reranked[:5]:
+            try:
+                top_keyword_score = max(top_keyword_score, float(d.metadata.get("retrieval_score") or 0.0))
+            except Exception:
+                pass
+            src = str(d.metadata.get("source", "")).lower()
+            raw = str(d.metadata.get("raw", "")).lower()
+            txt = str(getattr(d, "page_content", "")).lower()
+            d_entities = _extract_focus_entities(f"{src}\n{raw}\n{txt}")
+            if _entity_alignment_score(query_entities, d_entities, src) > 0:
+                entity_match_count += 1
+
+        if (not fast_mode) and route_mode == "sparse":
+            sparse_hits = score_sparse_hits(query, reranked, top_k=quality_keep)
             reranked = [Document(page_content=h.content, metadata=h.metadata) for h in sparse_hits]
-        reranked = _cross_encoder_rerank(query, reranked, keep=max(top_k * 3, 8))
+        if not fast_mode:
+            reranked = _cross_encoder_rerank(query, reranked, keep=quality_keep)
+
+        if not reranked:
+            confidence, conf_reason = "low", "no_relevant_docs"
+        elif query_entities and entity_match_count == 0:
+            confidence, conf_reason = "low", "no_exact_entity_match"
+        elif top_keyword_score < 10:
+            confidence, conf_reason = "low", "low_rerank_score"
+        elif top_keyword_score < 18:
+            confidence, conf_reason = "medium", "moderate_rerank_score"
+        else:
+            confidence, conf_reason = "high", "strong_match"
         return {
             "documents":        reranked,
-            "reasoning_trace":  [f"📚 Retrieved {len(reranked)} docs for: *{query[:60]}* [{route_mode}]"],
+            "retrieval_confidence": confidence,
+            "retrieval_score": float(top_keyword_score),
+            "reasoning_trace":  [
+                f"📚 Retrieved {len(reranked)} docs for: *{query[:60]}* [{route_mode}{', fast-lite' if fast_mode else ''}]",
+                f"📉 Retrieval confidence: **{confidence}** ({conf_reason}, score={top_keyword_score:.1f})",
+            ],
         }
     return retrieve
 
@@ -367,7 +488,7 @@ def make_grade_documents(kb: KnowledgeBase):
 
     async def grade_documents(state: AgentState) -> dict:
         question  = state.get("rewritten_query") or state["question"]
-        documents = state["documents"]
+        documents = state["documents"][: max(1, int(settings.MAX_DOCS_FOR_GRADING))]
         grades, filtered = [], []
 
         for doc in documents:
@@ -429,6 +550,8 @@ def make_generate(kb: KnowledgeBase):
     async def generate(state: AgentState) -> dict:
         question      = state["question"]
         docs          = state.get("filtered_docs") or state.get("documents", [])
+        docs          = docs[: max(1, int(settings.MAX_DOCS_FOR_GENERATION))]
+        retrieval_confidence = (state.get("retrieval_confidence") or "medium").lower()
         system_prompt = state.get("system_prompt", "")
         chat_history  = state.get("chat_history", [])
         gen_count     = state.get("generation_count", 0)
@@ -472,6 +595,10 @@ def make_generate(kb: KnowledgeBase):
 
         result     = await llm.ainvoke(messages)
         generation = result.content.strip()
+        if retrieval_confidence == "low":
+            caution = "I found loosely related documents — please verify with the cited sources."
+            if caution.lower() not in generation.lower():
+                generation = f"{caution}\n\n{generation}"
 
         sources, seen = [], set()
         for doc in docs:
@@ -797,6 +924,8 @@ async def run_agentic_rag(
         "documents":         [],
         "rewrite_count":     0,
         "rewritten_query":   None,
+        "retrieval_confidence": None,
+        "retrieval_score":   None,
         "doc_grades":        [],
         "filtered_docs":     [],
         "generation":        None,
