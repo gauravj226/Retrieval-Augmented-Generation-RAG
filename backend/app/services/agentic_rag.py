@@ -45,6 +45,7 @@ from .rag_service import get_chroma_client, get_embeddings
 from .graph_memory import GraphMemoryStore
 from .long_term_memory import LongTermMemoryStore
 from .semantic_cache import SemanticAnswerCache
+from .bm25_index import HybridBM25Index
 from .sota_retrieval import route_mode_for_query, score_sparse_hits
 from .vector_store_factory import get_vector_store
 from .web_search import web_search
@@ -80,21 +81,25 @@ def _cache_key(
     question: str,
     chat_history: Optional[List[Tuple[str, str]]],
     fast_mode: bool,
+    user_id: Optional[int] = None,
+    session_id: Optional[int] = None,
 ) -> str:
     mode = "fast" if fast_mode else "quality"
-    return f"{kb.id}:{mode}:{_normalise_query(question)}:{_history_tail_hash(chat_history)}"
+    scope = f"u:{int(user_id)}:s:{int(session_id)}" if (user_id is not None and session_id is not None) else "global"
+    return f"{kb.id}:{mode}:{scope}:{_normalise_query(question)}:{_history_tail_hash(chat_history)}"
 # Helper: build LLM
 def _llm(
     kb: KnowledgeBase,
     temperature: float = 0.0,
     model_override: Optional[str] = None,
+    num_predict_override: Optional[int] = None,
 ) -> ChatOllama:
     """Return a ChatOllama instance. temperature=0 for graders/routers."""
     return ChatOllama(
         model=model_override or kb.llm_model or settings.DEFAULT_LLM_MODEL,
         base_url=f"http://{settings.OLLAMA_HOST}:{settings.OLLAMA_PORT}",
         temperature=temperature,
-        num_predict=kb.max_tokens,
+        num_predict=(num_predict_override if num_predict_override is not None else kb.max_tokens),
     )
 
 
@@ -107,9 +112,13 @@ def _grade_llm(kb: KnowledgeBase) -> ChatOllama:
     )
 
 
-def _gen_llm(kb: KnowledgeBase) -> ChatOllama:
+def _gen_llm(kb: KnowledgeBase, *, max_tokens_override: Optional[int] = None) -> ChatOllama:
     """Creative LLM for generation."""
-    return _llm(kb, temperature=float(kb.temperature or 0.4))
+    return _llm(
+        kb,
+        temperature=float(kb.temperature or 0.4),
+        num_predict_override=max_tokens_override,
+    )
 
 
 def _parse_binary(text: str, positive: str, negative: str) -> str:
@@ -155,6 +164,61 @@ def _expand_query(query: str) -> List[str]:
             expanded.append(full)
 
     return expanded
+
+
+def _query_terms(text: str) -> List[str]:
+    return [
+        t for t in re.findall(r"[a-zA-Z0-9]{3,}", (text or "").lower())
+        if t not in {"what", "which", "with", "from", "about", "how", "when", "where"}
+    ]
+
+
+def _anchor_terms(query: str) -> List[str]:
+    """
+    Discriminative lexical anchors that should stay present across retrieval.
+    These help prevent topic drift when broad terms (e.g. "how", "use") dominate.
+    """
+    anchors = []
+    for t in _query_terms(query):
+        if len(t) >= 5:
+            anchors.append(t)
+    return anchors
+
+
+def _doc_has_anchor(doc: Document, anchors: List[str]) -> bool:
+    if not anchors:
+        return True
+    src = str((doc.metadata or {}).get("source", "")).lower()
+    raw = str((doc.metadata or {}).get("raw", "")).lower()
+    txt = str(getattr(doc, "page_content", "")).lower()
+    corpus = f"{src}\n{raw}\n{txt}"
+    return any(a in corpus for a in anchors)
+
+
+def _doc_overlap_score(query: str, doc: Document) -> int:
+    terms = _query_terms(query)
+    if not terms:
+        return 0
+    src = str((doc.metadata or {}).get("source", "")).lower()
+    raw = str((doc.metadata or {}).get("raw", "")).lower()
+    txt = str(getattr(doc, "page_content", "")).lower()
+    corpus = f"{src}\n{raw}\n{txt}"
+    filename_hits = sum(1 for t in terms if t in src)
+    content_hits = sum(1 for t in terms if t in corpus)
+    return (filename_hits * 4) + content_hits
+
+
+def _rewrite_is_compatible(original: str, rewritten: str) -> bool:
+    """Prevent rewrite drift away from the user's original domain intent."""
+    o_terms = set(_query_terms(original))
+    r_terms = set(_query_terms(rewritten))
+    if not o_terms:
+        return True
+    if not r_terms:
+        return False
+    overlap_ratio = len(o_terms.intersection(r_terms)) / max(1, len(o_terms))
+    # Require at least half of salient original terms to survive the rewrite.
+    return overlap_ratio >= 0.5
 
 
 def _extract_focus_entities(text: str) -> dict[str, set[str]]:
@@ -271,11 +335,23 @@ def _keyword_rerank(docs: List[Document], query: str, keep: int) -> List[Documen
 def _lexical_candidates(kb: KnowledgeBase, query: str, limit: int) -> List[Document]:
     """
     Sparse lexical retrieval over existing chunks (hybrid with dense retriever).
-    Pulls a bounded corpus snapshot from Chroma and scores by keyword overlap.
+    Primary path uses ingest-time BM25 index; fallback keeps legacy bounded
+    Chroma scan for safety if index is unavailable.
     """
     terms = re.findall(r"[a-zA-Z0-9]{3,}", query.lower())
     if not terms:
         return []
+
+    try:
+        indexed = HybridBM25Index(settings.HYBRID_BM25_DIR).search(
+            kb_id=int(kb.id),
+            query=query,
+            top_k=max(1, int(limit)),
+        )
+        if indexed:
+            return indexed
+    except Exception as e:
+        logger.warning("bm25 index retrieval failed; falling back to chroma scan: %s", e)
 
     try:
         collection = get_chroma_client().get_collection(name=kb.chroma_collection)
@@ -289,6 +365,7 @@ def _lexical_candidates(kb: KnowledgeBase, query: str, limit: int) -> List[Docum
 
     docs = data.get("documents") or []
     metas = data.get("metadatas") or [{} for _ in docs]
+    warmup_docs: List[Document] = []
     scored = []
     for text, meta in zip(docs, metas):
         if not text:
@@ -301,10 +378,19 @@ def _lexical_candidates(kb: KnowledgeBase, query: str, limit: int) -> List[Docum
         filename_hits = sum(1 for t in terms if t in source)
         content_hits = sum(corpus.count(t) for t in terms)
         score = (filename_hits * 6) + min(content_hits, 12)
+        doc_obj = Document(page_content=str(text), metadata=meta)
+        warmup_docs.append(doc_obj)
         if score > 0:
-            scored.append((score, Document(page_content=str(text), metadata=meta)))
+            scored.append((score, doc_obj))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    # One-time warmup path for legacy KBs: if BM25 index was missing, persist
+    # corpus chunks now so future quality-mode queries avoid Chroma scans.
+    try:
+        if warmup_docs:
+            HybridBM25Index(settings.HYBRID_BM25_DIR).upsert_chunks(kb_id=int(kb.id), docs=warmup_docs)
+    except Exception:
+        pass
     return [d for _, d in scored[:limit]]
 
 
@@ -393,6 +479,7 @@ def make_retrieve(kb: KnowledgeBase):
             "k":           top_k,
             "fetch_k":     fetch_k,
             "lambda_mult": float(kb.mmr_lambda or 0.7),
+            "score_threshold": float(kb.score_threshold or 0.35),
         },
     )
     fast_retriever = vectorstore.as_retriever(
@@ -403,6 +490,7 @@ def make_retrieve(kb: KnowledgeBase):
     async def retrieve(state: AgentState) -> dict:
         fast_mode = bool(state.get("fast_mode"))
         query = state.get("rewritten_query") or state["question"]
+        anchors = _anchor_terms(state.get("question") or query)
         queries = [query] if fast_mode else _expand_query(query)
         route_mode = state.get("route_mode", "retrieve")
         if settings.ENABLE_GRAPH_RAG and route_mode == "graph":
@@ -440,6 +528,9 @@ def make_retrieve(kb: KnowledgeBase):
 
         quality_keep = top_k if fast_mode else max(top_k * 2, 6)
         reranked = _keyword_rerank(all_docs, query, keep=quality_keep)
+        anchored = [d for d in reranked if _doc_has_anchor(d, anchors)]
+        if anchored:
+            reranked = anchored[:quality_keep]
         query_entities = _extract_focus_entities(query)
         top_keyword_score = 0.0
         entity_match_count = 0
@@ -477,6 +568,7 @@ def make_retrieve(kb: KnowledgeBase):
             "retrieval_score": float(top_keyword_score),
             "reasoning_trace":  [
                 f"📚 Retrieved {len(reranked)} docs for: *{query[:60]}* [{route_mode}{', fast-lite' if fast_mode else ''}]",
+                (f"📌 Anchor filter active: {', '.join(anchors[:4])}" if anchors else "📌 Anchor filter inactive"),
                 f"📉 Retrieval confidence: **{confidence}** ({conf_reason}, score={top_keyword_score:.1f})",
             ],
         }
@@ -490,30 +582,51 @@ def make_grade_documents(kb: KnowledgeBase):
         question  = state.get("rewritten_query") or state["question"]
         documents = state["documents"][: max(1, int(settings.MAX_DOCS_FOR_GRADING))]
         grades, filtered = [], []
+        heuristic_kept = 0
 
         for doc in documents:
             prompt = f"""Grade whether this document is relevant to the question.
 
+Department context: {kb.department} — {kb.description or 'General knowledge-base operations'}
 Question: {question}
 Source filename: {doc.metadata.get("source", "unknown")}
 Document excerpt: {doc.page_content[:1200]}
 
 Rules:
-- Reply "yes" only if this document likely contains direct policy details for the question topic.
-- Reply "no" for generic policy text that is not specifically about the asked topic.
+- Treat synonyms/paraphrases/domain-specific wording as relevant when intent matches.
+- Filename hints are meaningful evidence (do not ignore filename-topic overlap).
+- Terms like link/unlink/pair/connect/disconnect may be department-specific operations.
+- Reply "yes" if this chunk could directly help answer the user's request, even if wording differs.
+- Reply "no" only when clearly unrelated.
 
 Reply ONLY: yes or no"""
             result = await llm.ainvoke([HumanMessage(content=prompt)])
             grade = _parse_binary(result.content, "yes", "no")
             grades.append(grade)
-            if grade == "yes":
+            heuristic_score = _doc_overlap_score(question, doc)
+            heuristic_threshold = max(3, len(_query_terms(question)))
+            if grade == "yes" or heuristic_score >= heuristic_threshold:
                 filtered.append(doc)
+                if grade != "yes" and heuristic_score >= heuristic_threshold:
+                    heuristic_kept += 1
 
-        logger.info(f"[grade_documents] {len(filtered)}/{len(documents)} relevant")
+        # If LLM grader is over-strict but retrieval found plausible docs, avoid
+        # rewrite drift and keep top candidates for grounded generation.
+        if not filtered and documents:
+            retrieval_conf = str(state.get("retrieval_confidence") or "").lower()
+            try:
+                best_score = max(float((d.metadata or {}).get("retrieval_score") or 0.0) for d in documents)
+            except Exception:
+                best_score = 0.0
+            if retrieval_conf == "high" or best_score >= 18.0:
+                filtered = documents[: min(4, len(documents))]
+                logger.info("[grade_documents] fallback keep=%s (conf=%s, score=%.1f)", len(filtered), retrieval_conf, best_score)
+
+        logger.info(f"[grade_documents] {len(filtered)}/{len(documents)} relevant (heuristic_kept={heuristic_kept})")
         return {
             "doc_grades":       grades,
             "filtered_docs":    filtered,
-            "reasoning_trace":  [f"🔍 Grading: {len(filtered)}/{len(documents)} relevant"],
+            "reasoning_trace":  [f"🔍 Grading: {len(filtered)}/{len(documents)} relevant" + (f" (heuristic rescue: {heuristic_kept})" if heuristic_kept else "")],
         }
     return grade_documents
 
@@ -530,12 +643,17 @@ def make_rewrite_query(kb: KnowledgeBase):
         prompt = f"""Rewrite this question to improve retrieval quality.
 Preserve core entities, abbreviations, and intent.
 Do NOT answer. Do NOT broaden topic. Keep to one short query (3-12 words).{context}
+Do NOT reinterpret the task into a different domain.
+Keep the user's concrete nouns from the original question whenever possible.
 
 Original: {question}
 Rewritten (reply with ONLY the rewritten question):"""
 
         result    = await llm.ainvoke([HumanMessage(content=prompt)])
         rewritten = result.content.strip()
+        if not _rewrite_is_compatible(question, rewritten):
+            logger.info("[rewrite_query] rejected drift rewrite='%s' original='%s'", rewritten[:80], question[:80])
+            rewritten = question
         logger.info(f"[rewrite_query] → '{rewritten[:60]}'")
         return {
             "rewritten_query":  rewritten,
@@ -545,24 +663,35 @@ Rewritten (reply with ONLY the rewritten question):"""
     return rewrite_query
 
 def make_generate(kb: KnowledgeBase):
-    llm = _gen_llm(kb)
-
     async def generate(state: AgentState) -> dict:
         question      = state["question"]
         docs          = state.get("filtered_docs") or state.get("documents", [])
         docs          = docs[: max(1, int(settings.MAX_DOCS_FOR_GENERATION))]
+        fast_mode     = bool(state.get("fast_mode"))
+        memory_window = int(getattr(kb, "memory_window", 5) or 5)
         retrieval_confidence = (state.get("retrieval_confidence") or "medium").lower()
         system_prompt = state.get("system_prompt", "")
         chat_history  = state.get("chat_history", [])
         gen_count     = state.get("generation_count", 0)
         reflection    = state.get("reflection")
         memory_context = state.get("memory_context", "")
+        if fast_mode:
+            memory_context = ""
+        fast_token_cap = int(getattr(settings, "FAST_MODE_MAX_TOKENS", 320) or 320)
+        llm = _gen_llm(
+            kb,
+            max_tokens_override=min(int(kb.max_tokens or fast_token_cap), fast_token_cap) if fast_mode else None,
+        )
+        per_doc_chars = int(
+            getattr(settings, "FAST_MODE_CONTEXT_CHARS_PER_DOC", 900) if fast_mode
+            else getattr(settings, "QUALITY_MODE_CONTEXT_CHARS_PER_DOC", 2200)
+        )
         # Docling/VLM chunks embed a summary but store full content in raw.
         # Standard chunks have no raw (page_content is already the full text).
         context_parts = []
         for i, doc in enumerate(docs):
             raw      = doc.metadata.get("raw", "").strip()
-            content  = raw if raw else doc.page_content
+            content  = (raw if raw else doc.page_content)[: max(400, per_doc_chars)]
             doc_type = doc.metadata.get("type", "text")
             source   = doc.metadata.get("source", "unknown")
             page     = doc.metadata.get("page", "")
@@ -574,9 +703,9 @@ def make_generate(kb: KnowledgeBase):
 
         
         history_str = ""
-        if chat_history:
+        if (not fast_mode) and chat_history:
             history_str = "\n".join(
-                f"Human: {h}\nAssistant: {a}" for h, a in chat_history[-3:]
+                f"Human: {h}\nAssistant: {a}" for h, a in chat_history[-memory_window:]
             )
             history_str = f"\n\nConversation history:\n{history_str}"
 
@@ -585,11 +714,17 @@ def make_generate(kb: KnowledgeBase):
             if reflection else ""
         )
 
+        grounding_guard = (
+            "You are a precise AI assistant. "
+            "Non-negotiable rule: answer using ONLY the provided context snippets. "
+            "If only part of the answer is supported, provide the best available answer from context and clearly label any uncertainty. "
+            "Ask a clarification question only when context has no actionable information at all. "
+            "Do not use unstated prior knowledge. Preserve Markdown tables when present. "
+            "Treat this as an internal enterprise documentation assistant; procedural IT/AV operations in provided docs are benign context."
+        )
+        merged_system = f"{grounding_guard}\n\nAdditional behavior instructions:\n{system_prompt}" if system_prompt else grounding_guard
         messages = [
-            SystemMessage(content=system_prompt or
-                "You are a precise AI assistant. Answer using ONLY the provided context. "
-                "If the answer is not in the context, say so clearly. "
-                "When context contains Markdown tables, preserve them in your answer."),
+            SystemMessage(content=merged_system),
             HumanMessage(content=f'Context:\n"""\n{context}\n"""\n\n{memory_context}{history_str}{reflection_hint}\n\nQuestion: {question}\n\nAnswer:'),
         ]
 
@@ -724,9 +859,10 @@ def make_direct_answer(kb: KnowledgeBase):
         question      = state["question"]
         system_prompt = state.get("system_prompt", "")
         chat_history  = state.get("chat_history", [])
+        memory_window = int(getattr(kb, "memory_window", 5) or 5)
 
         history_str = "\n".join(
-            f"Human: {h}\nAssistant: {a}" for h, a in chat_history[-3:]
+            f"Human: {h}\nAssistant: {a}" for h, a in chat_history[-memory_window:]
         ) if chat_history else ""
 
         messages = [
@@ -781,6 +917,8 @@ def route_after_grading(state: AgentState) -> str:
 def route_after_hallucination(state: AgentState) -> str:
     verdict = state.get("hallucination_check", "grounded")
     if verdict == "hallucinating":
+        if str(state.get("retrieval_confidence") or "").lower() in {"high", "medium"}:
+            return "quality"
         if state.get("generation_count", 0) >= state.get("max_retries", DEFAULT_MAX_RETRIES):
             return "quality"   # give up on hallucination check, check quality
         return "reflect"
@@ -790,6 +928,9 @@ def route_after_hallucination(state: AgentState) -> str:
 def route_after_quality(state: AgentState) -> str:
     quality = state.get("answer_quality", "useful")
     if quality == "not_useful":
+        conf = str(state.get("retrieval_confidence") or "").lower()
+        if conf in {"high", "medium"} and state.get("rewrite_count", 0) >= 1:
+            return "end"
         if state.get("rewrite_count", 0) >= state.get("max_rewrites", DEFAULT_MAX_REWRITES):
             return "end"   # accept imperfect answer rather than loop forever
         return "reflect"
@@ -888,7 +1029,15 @@ async def run_agentic_rag(
 
     system_prompt = resolve_system_prompt(kb, db)
     effective_fast_mode = bool(settings.FAST_MODE) if fast_mode_override is None else bool(fast_mode_override)
-    cache_key = _cache_key(kb, question, chat_history, effective_fast_mode)
+    cache_scope = f"u:{int(user_id)}:s:{int(session_id)}" if (user_id is not None and session_id is not None) else "global"
+    cache_key = _cache_key(
+        kb,
+        question,
+        chat_history,
+        effective_fast_mode,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
     now = time.time()
     ttl = max(1, int(settings.QUERY_CACHE_TTL_SEC))
@@ -901,6 +1050,7 @@ async def run_agentic_rag(
             query=question,
             kb_id=kb.id,
             mode="fast" if effective_fast_mode else "quality",
+            scope=cache_scope,
         )
         if sem_hit:
             answer, sources, trace, score = sem_hit
@@ -909,7 +1059,12 @@ async def run_agentic_rag(
 
     memory_context = ""
     memory_store = None
-    if settings.ENABLE_LONG_TERM_MEMORY and user_id is not None and session_id is not None:
+    if (
+        (not effective_fast_mode)
+        and settings.ENABLE_LONG_TERM_MEMORY
+        and user_id is not None
+        and session_id is not None
+    ):
         memory_store = LongTermMemoryStore(settings.MEMORY_STORE_DIR)
         profile = memory_store.load(user_id=user_id, session_id=session_id)
         memory_context = LongTermMemoryStore.to_prompt_context(profile)
@@ -991,6 +1146,7 @@ async def run_agentic_rag(
                 mode="fast" if effective_fast_mode else "quality",
                 sources=sources,
                 trace=trace,
+                scope=cache_scope,
             )
 
         return result

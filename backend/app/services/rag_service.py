@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, List, Optional, Tuple
 
 import chromadb
@@ -13,6 +14,7 @@ import torch
 from ..config import settings
 from ..models.models import KnowledgeBase, Personality
 from .document_processor import process_file
+from .bm25_index import HybridBM25Index
 from .graph_memory import GraphMemoryStore
 from .sota_retrieval import contextualize_documents
 from .vector_store_factory import get_vector_store
@@ -21,6 +23,28 @@ from .vector_store_factory import get_vector_store
 logger = logging.getLogger(__name__)
 _chroma_client = None
 _embeddings_cache: dict = {}
+
+
+def _repair_ocr_spacing(text: str) -> str:
+    """
+    Normalize common OCR/doc-conversion spacing artifacts so retrieval and
+    source previews don't show split words like "I n s t r u c t i o n".
+    """
+    if not text:
+        return text
+    fixed = str(text)
+
+    def _join_spelled(match):
+        return match.group(0).replace(" ", "")
+
+    # Join long runs of single-letter tokens: "T e a c h i n g" -> "Teaching"
+    fixed = re.sub(r"(?:(?:\b[A-Za-z]\b\s+){2,}\b[A-Za-z]\b)", _join_spelled, fixed)
+    # Tidy punctuation spacing noise.
+    fixed = re.sub(r"\s+([,.;:!?])", r"\1", fixed)
+    fixed = re.sub(r"([(\[{])\s+", r"\1", fixed)
+    fixed = re.sub(r"\s+([)\]}])", r"\1", fixed)
+    fixed = re.sub(r"[ \t]{2,}", " ", fixed)
+    return fixed.strip()
 
 
 #  Chroma client 
@@ -194,6 +218,18 @@ async def ingest_document(
     if not chunks:
         raise ValueError(f"No content extracted from {original_filename}")
 
+    # Repair common OCR/doc-converter spacing artifacts before metadata merge
+    # and before embedding/indexing, so both retrieval and generation see cleaner text.
+    for chunk in chunks:
+        try:
+            chunk.page_content = _repair_ocr_spacing(getattr(chunk, "page_content", "") or "")
+            meta = dict(getattr(chunk, "metadata", {}) or {})
+            if meta.get("raw"):
+                meta["raw"] = _repair_ocr_spacing(str(meta.get("raw", "")))
+            chunk.metadata = meta
+        except Exception:
+            continue
+
     if metadata:
         for chunk in chunks:
             base = chunk.metadata or {}
@@ -216,6 +252,8 @@ async def ingest_document(
     # ChromaDB stores both  retrieval returns summary+metadata together
     vectorstore.add_documents(chunks)
     kb_id = getattr(kb, "id", None)
+    if kb_id is not None:
+        HybridBM25Index(settings.HYBRID_BM25_DIR).upsert_chunks(kb_id=int(kb_id), docs=chunks)
     if settings.ENABLE_GRAPH_RAG and kb_id is not None:
         GraphMemoryStore(settings.GRAPH_MEMORY_DIR).index_documents(kb_id=int(kb_id), docs=chunks)
 
@@ -323,6 +361,15 @@ def delete_document_vectors(
     logger.info(
         f"Deleted {removed} vector chunks for doc_id={doc_id} from '{kb.chroma_collection}'"
     )
+    try:
+        HybridBM25Index(settings.HYBRID_BM25_DIR).remove_document(
+            kb_id=int(kb.id),
+            doc_id=int(doc_id),
+            stored_filename=stored_filename,
+            original_filename=original_filename,
+        )
+    except Exception as e:
+        logger.warning("BM25 index cleanup failed for kb=%s doc_id=%s: %s", kb.id, doc_id, e)
     return removed
 
 

@@ -25,6 +25,14 @@ class LongTermMemoryStore:
         path = self._path(user_id, session_id)
         path.write_text(json.dumps(profile, ensure_ascii=True, indent=2), encoding="utf-8")
 
+    def clear(self, user_id: int, session_id: int) -> None:
+        path = self._path(user_id, session_id)
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+
     def _extract_preferences(self, text: str) -> List[str]:
         lowered = (text or "").lower()
         patterns = [

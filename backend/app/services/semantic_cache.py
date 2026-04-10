@@ -78,6 +78,7 @@ class CacheItem:
     trace: List[str]
     kb_id: int
     mode: str
+    scope: str
     ts: float
 
 
@@ -105,9 +106,11 @@ class SemanticAnswerCache:
         mode: str,
         sources: Optional[List[dict]] = None,
         trace: Optional[List[str]] = None,
+        scope: Optional[str] = None,
     ) -> None:
         now = time.time()
-        key = f"{kb_id}:{mode}:{now:.6f}"
+        norm_scope = (scope or "global").strip() or "global"
+        key = f"{kb_id}:{mode}:{norm_scope}:{now:.6f}"
         with self._lock:
             self._items[key] = CacheItem(
                 query=query,
@@ -116,19 +119,29 @@ class SemanticAnswerCache:
                 trace=trace or [],
                 kb_id=int(kb_id),
                 mode=str(mode),
+                scope=norm_scope,
                 ts=now,
             )
             self._purge(now)
 
-    def get(self, query: str, kb_id: int, mode: str) -> Optional[Tuple[str, List[dict], List[str], float]]:
+    def get(
+        self,
+        query: str,
+        kb_id: int,
+        mode: str,
+        scope: Optional[str] = None,
+    ) -> Optional[Tuple[str, List[dict], List[str], float]]:
         now = time.time()
         q_tokens = _tokens(query)
         q_entities = _focus_entities(query)
+        norm_scope = (scope or "global").strip() or "global"
         best: Optional[Tuple[str, List[dict], List[str], float]] = None
         with self._lock:
             self._purge(now)
             for item in self._items.values():
                 if item.kb_id != int(kb_id) or item.mode != str(mode):
+                    continue
+                if item.scope != norm_scope:
                     continue
                 if q_entities:
                     c_entities = _focus_entities(item.query)
