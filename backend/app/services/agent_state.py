@@ -22,6 +22,8 @@ class AgentState(TypedDict):
     documents:      List[Any]                  # retrieved LangChain Documents
     rewrite_count:  int                        # how many times query was rewritten
     rewritten_query: Optional[str]             # last rewritten query
+    retrieval_confidence: Optional[str]        # "high" | "medium" | "low"
+    retrieval_score: Optional[float]           # heuristic score from reranker
 
     # ── Grading ───────────────────────────────────────────────────────────────
     doc_grades:     List[str]                  # "yes"|"no" per document

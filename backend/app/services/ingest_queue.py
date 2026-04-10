@@ -82,8 +82,11 @@ async def _process_task(task: IngestTask, worker_name: str) -> None:
         # Run ingestion in a background thread. Parsing/OCR/VLM paths contain
         # heavy sync work that can block the main event loop otherwise.
         kb_ref = SimpleNamespace(
+            id=kb.id,
             chroma_collection=kb.chroma_collection,
             embedding_model=kb.embedding_model,
+            chunk_size=getattr(kb, "chunk_size", 800),
+            chunk_overlap=getattr(kb, "chunk_overlap", 120),
         )
         chunk_count = await asyncio.to_thread(
             _run_ingest_sync,

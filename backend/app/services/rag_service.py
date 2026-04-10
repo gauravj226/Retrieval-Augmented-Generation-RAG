@@ -215,8 +215,9 @@ async def ingest_document(
     # metadata.raw = full content (what gets sent to the LLM)
     # ChromaDB stores both  retrieval returns summary+metadata together
     vectorstore.add_documents(chunks)
-    if settings.ENABLE_GRAPH_RAG:
-        GraphMemoryStore(settings.GRAPH_MEMORY_DIR).index_documents(kb_id=kb.id, docs=chunks)
+    kb_id = getattr(kb, "id", None)
+    if settings.ENABLE_GRAPH_RAG and kb_id is not None:
+        GraphMemoryStore(settings.GRAPH_MEMORY_DIR).index_documents(kb_id=int(kb_id), docs=chunks)
 
     logger.info(f"[ingest] '{original_filename}': {len(chunks)} chunks â†’ ChromaDB")
     return len(chunks)
@@ -233,8 +234,8 @@ async def _standard_chunks(
     return await process_file(
         file_path=file_path,
         original_filename=original_filename,
-        chunk_size=kb.chunk_size or 800,
-        chunk_overlap=kb.chunk_overlap or 120,
+        chunk_size=int(getattr(kb, "chunk_size", 800) or 800),
+        chunk_overlap=int(getattr(kb, "chunk_overlap", 120) or 120),
         metadata={
             "source": original_filename,
             "type": "text",
