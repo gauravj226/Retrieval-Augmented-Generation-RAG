@@ -47,6 +47,8 @@ from .long_term_memory import LongTermMemoryStore
 from .semantic_cache import SemanticAnswerCache
 from .bm25_index import HybridBM25Index
 from .sota_retrieval import route_mode_for_query, score_sparse_hits
+from .kb_manifest import load_manifest
+from .kb_manifest import load_manifest
 from .vector_store_factory import get_vector_store
 from .web_search import web_search
 from .ui_payload import build_ui_payload
@@ -420,11 +422,41 @@ def _cross_encoder_rerank(query: str, docs: List[Document], keep: int) -> List[D
     except Exception as e:
         logger.warning("cross-encoder rerank failed: %s", e)
         return docs[:keep]
+def make_introspect(kb):
+    llm = _gen_llm(kb)
+    async def introspect(state):
+        question = state['question']
+        manifest = load_manifest(kb.id)
+        if not manifest:
+            ans = 'I do not yet have a document catalogue. Try a specific question.'
+            return {'generation': ans, 'final_answer': ans, 'sources': [],
+                    'reasoning_trace': ['Introspect: manifest empty']}
+        lines_out = []
+        for e in manifest.values():
+            name = e.get('display_name', e['filename'])
+            hs = e.get('headings', [])
+            lines_out.append(name + ((' covers: ' + ', '.join(hs[:4])) if hs else ''))
+        prompt = (
+            f'You are a helpful assistant for the {kb.department!r} department.\n'
+            f'Based on the documents below, answer what topics you can help with.\n\n'
+            f'Documents:\n' + '\n'.join(f'- {l}' for l in lines_out) +
+            f'\n\nUser question: {question}\n\nAnswer:'
+        )
+        res = await llm.ainvoke([HumanMessage(content=prompt)])
+        ans = res.content.strip()
+        return {'generation': ans, 'final_answer': ans, 'sources': [],
+                'reasoning_trace': [f'Introspect: {len(manifest)} documents']}
+    return introspect
+
+
 # Node 1 — route_query
 def make_route_query(kb: KnowledgeBase):
     async def route_query(state: AgentState) -> dict:
         question = state["question"]
         mode_hint = route_mode_for_query(question)
+        if mode_hint == "introspect":
+            return {"route_decision": "introspect", "route_mode": "introspect",
+                    "reasoning_trace": ["Route: introspect"]}
         if bool(state.get("fast_mode")):
             q = question.strip().lower()
             if q in {"hi", "hello", "hey", "thanks", "thank you"}:
@@ -484,7 +516,7 @@ def make_retrieve(kb: KnowledgeBase):
     )
     fast_retriever = vectorstore.as_retriever(
         search_type="similarity",
-        search_kwargs={"k": top_k},
+        search_kwargs={"k": top_k, "score_threshold": float(getattr(kb, "score_threshold", None) or 0.35)},
     )
 
     async def retrieve(state: AgentState) -> dict:
@@ -601,7 +633,8 @@ Rules:
 
 Reply ONLY: yes or no"""
             result = await llm.ainvoke([HumanMessage(content=prompt)])
-            grade = _parse_binary(result.content, "yes", "no")
+            _rg = result.content.strip().lower()
+            grade = "yes" if _rg.startswith("yes") else "no" if _rg.startswith("no") else _parse_binary(result.content, "yes", "no")
             grades.append(grade)
             heuristic_score = _doc_overlap_score(question, doc)
             heuristic_threshold = max(3, len(_query_terms(question)))
@@ -800,7 +833,7 @@ def make_check_answer_quality(kb: KnowledgeBase):
         question   = state["question"]
         generation = state["generation"]
 
-        prompt = f"""Does this answer fully address the question?
+        prompt = f"Does this answer fully address the question using sources?\\nDept: {kb.department}\\nQ: {question}\\nSources:\\n{_sp}\\nAnswer: {generation}\\n\\nReply ONLY: useful or not_useful"
 
 Question: {question}
 Answer: {generation}
@@ -917,10 +950,8 @@ def route_after_grading(state: AgentState) -> str:
 def route_after_hallucination(state: AgentState) -> str:
     verdict = state.get("hallucination_check", "grounded")
     if verdict == "hallucinating":
-        if str(state.get("retrieval_confidence") or "").lower() in {"high", "medium"}:
-            return "quality"
         if state.get("generation_count", 0) >= state.get("max_retries", DEFAULT_MAX_RETRIES):
-            return "quality"   # give up on hallucination check, check quality
+            return "quality"
         return "reflect"
     return "quality"
 
@@ -959,11 +990,14 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
         graph.add_node("finalise", finalise)
 
         graph.add_edge(START, "route_query")
+        graph.add_node("introspect", make_introspect(kb))
         graph.add_conditional_edges("route_query", route_after_routing, {
             "retrieve": "retrieve",
             "general": "direct_answer",
             "clarify": "clarify",
+            "introspect": "introspect",
         })
+        graph.add_edge("introspect", "finalise")
         graph.add_edge("retrieve", "generate")
         graph.add_edge("generate", "finalise")
         graph.add_edge("direct_answer", "finalise")
@@ -982,11 +1016,14 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
     graph.add_node("clarify",              clarify)
     graph.add_node("finalise",             finalise)
     graph.add_edge(START, "route_query")
+    graph.add_node("introspect", make_introspect(kb))
     graph.add_conditional_edges("route_query", route_after_routing, {
         "retrieve": "retrieve",
         "general":  "direct_answer",
         "clarify":  "clarify",
+        "introspect": "introspect",
     })
+    graph.add_edge("introspect", "finalise")
     graph.add_edge("retrieve", "grade_documents")
     graph.add_conditional_edges("grade_documents", route_after_grading, {
         "generate": "generate",
@@ -1029,7 +1066,7 @@ async def run_agentic_rag(
 
     system_prompt = resolve_system_prompt(kb, db)
     effective_fast_mode = bool(settings.FAST_MODE) if fast_mode_override is None else bool(fast_mode_override)
-    cache_scope = f"u:{int(user_id)}:s:{int(session_id)}" if (user_id is not None and session_id is not None) else "global"
+    cache_scope = f"u:{int(user_id)}" if (user_id is not None and settings.ENABLE_LONG_TERM_MEMORY) else "global"
     cache_key = _cache_key(
         kb,
         question,
