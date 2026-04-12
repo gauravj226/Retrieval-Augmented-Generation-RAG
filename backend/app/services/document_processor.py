@@ -37,7 +37,14 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-def _fix_ocr_spacing(text):\n    text = re.sub(r'(?<=[a-zA-Z]) ([a-z]) (?=[a-z])', r'\\1', text)\n    text = re.sub(r'\\b([A-Z][a-z]+) ([a-z]) ([a-z]+)\\b', r'\\1\\2\\3', text)\n    return text\n\n\ndef _score_text(text: str) -> int:
+def _fix_ocr_spacing(text: str) -> str:
+    """Fix isolated single chars injected by OCR mid-word e.g. 'Instruct i ons' -> 'Instructions'."""
+    # Pattern 1: single lowercase char surrounded by spaces between word chars
+    text = re.sub(r"(?<=[a-zA-Z]) ([a-z]) (?=[a-z])", r"\1", text)
+    # Pattern 2: capitalised word fragment + single char + word fragment
+    text = re.sub(r"\b([A-Z][a-z]+) ([a-z]) ([a-z]+)\b", r"\1\2\3", text)
+    return text
+def _score_text(text: str) -> int:
     # Prefer outputs with useful alphanumeric content, not just whitespace/noise.
     return sum(ch.isalnum() for ch in text)
 
