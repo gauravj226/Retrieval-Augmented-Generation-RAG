@@ -36,7 +36,7 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-def _score_text(text: str) -> int:
+def _fix_ocr_spacing(text):\n    text = re.sub(r'(?<=[a-zA-Z]) ([a-z]) (?=[a-z])', r'\\1', text)\n    text = re.sub(r'\\b([A-Z][a-z]+) ([a-z]) ([a-z]+)\\b', r'\\1\\2\\3', text)\n    return text\n\n\ndef _score_text(text: str) -> int:
     # Prefer outputs with useful alphanumeric content, not just whitespace/noise.
     return sum(ch.isalnum() for ch in text)
 
@@ -132,6 +132,9 @@ async def process_file(
         logger.error(f"Extraction failed for '{original_filename}': {e}", exc_info=True)
         raise
 
+    content = _fix_ocr_spacing(content)
+    content = _fix_ocr_spacing(content)
+    content = _fix_ocr_spacing(content)
     if not content or not content.strip():
         raise ValueError(
             f"No text could be extracted from '{original_filename}'. "
@@ -145,6 +148,20 @@ async def process_file(
     )
     docs = splitter.create_documents([content], metadatas=[base_meta])
     logger.info(f"'{original_filename}' → {len(docs)} chunks (ext={ext})")
+    kb_id = (metadata or {}).get("kb_id")
+    if kb_id is not None:
+        try:
+            from .kb_manifest import upsert_manifest
+            upsert_manifest(int(kb_id), original_filename, content, ext)
+        except Exception as _me:
+            logger.warning("manifest upsert: %s", _me)
+    kb_id = (metadata or {}).get("kb_id")
+    if kb_id is not None:
+        try:
+            from .kb_manifest import upsert_manifest
+            upsert_manifest(int(kb_id), original_filename, content, ext)
+        except Exception as _me:
+            logger.warning("manifest upsert: %s", _me)
     return docs
 
 
