@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .config import settings
 from .database import SessionLocal, init_db
@@ -16,7 +17,7 @@ from .services.ingest_queue import start_ingest_workers, stop_ingest_workers
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 configure_audit_logger()
@@ -30,6 +31,10 @@ app = FastAPI(
 )
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
+
+# Trust IIS forwarded headers
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,31 +54,29 @@ app.include_router(groups.router)
 # ── MCP (exposes chat endpoints as MCP tools) ─────────────────────────────────
 setup_mcp(app)
 
-
 # ── Startup ────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
     logger.info("Initialising database...")
     audit_event("system.startup", details={"service": "backend"})
     init_db()
-
+    
     db = SessionLocal()
     try:
         _seed_personalities(db)
     finally:
         db.close()
-
+    
     # Warm up Chroma connection
     try:
         get_chroma_client().heartbeat()
         logger.info("ChromaDB connected ✓")
     except Exception as e:
         logger.warning(f"ChromaDB not ready yet: {e}")
-
+        
     logger.info("RAG Platform (Agentic v2) ready ✓")
     audit_event("system.ready", details={"service": "backend"})
     await start_ingest_workers()
-
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -107,8 +110,7 @@ def _seed_personalities(db):
     for p in presets:
         if not db.query(Personality).filter(Personality.name == p["name"]).first():
             db.add(Personality(**p, is_preset=True))
-    db.commit()
-
+            db.commit()
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
