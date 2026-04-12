@@ -987,74 +987,76 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
 
     graph = StateGraph(AgentState)
 
-    if fast_mode:
-        graph.add_node("route_query", make_route_query(kb))
-        graph.add_node("retrieve", make_retrieve(kb))
-        graph.add_node("generate", make_generate(kb))
+        if fast_mode:
+        graph.add_node("route_query",   make_route_query(kb))
+        graph.add_node("retrieve",      make_retrieve(kb))
+        graph.add_node("generate",      make_generate(kb))
         graph.add_node("direct_answer", make_direct_answer(kb))
-        graph.add_node("clarify", clarify)
-        graph.add_node("finalise", finalise)
+        graph.add_node("clarify",       clarify)
+        graph.add_node("finalise",      finalise)
+        graph.add_node("introspect",    make_introspect(kb))
+        graph.add_node("check_hallucination", make_check_hallucination(kb))
 
         graph.add_edge(START, "route_query")
-        graph.add_node("introspect", make_introspect(kb))
         graph.add_conditional_edges("route_query", route_after_routing, {
-            "retrieve": "retrieve",
-            "general": "direct_answer",
-            "clarify": "clarify",
+            "retrieve":   "retrieve",
+            "general":    "direct_answer",
+            "clarify":    "clarify",
             "introspect": "introspect",
         })
-        graph.add_edge("introspect", "finalise")
-        graph.add_edge("retrieve", "generate")
-        graph.add_node("check_hallucination", make_check_hallucination(kb))
-        graph.add_edge("generate",            "check_hallucination")
-        graph.add_edge("check_hallucination", "finalise")
-        graph.add_edge("direct_answer", "finalise")
-        graph.add_edge("clarify", "finalise")
-        graph.add_edge("finalise", END)
+        graph.add_edge("introspect",         "finalise")
+        graph.add_edge("retrieve",           "generate")
+        graph.add_edge("generate",           "check_hallucination")
+        graph.add_edge("check_hallucination","finalise")
+        graph.add_edge("direct_answer",      "finalise")
+        graph.add_edge("clarify",            "finalise")
+        graph.add_edge("finalise",           END)
         return graph.compile()
-    graph.add_node("route_query",          make_route_query(kb))
-    graph.add_node("retrieve",             make_retrieve(kb))
-    graph.add_node("grade_documents",      make_grade_documents(kb))
-    graph.add_node("rewrite_query",        make_rewrite_query(kb))
-    graph.add_node("generate",             make_generate(kb))
-    graph.add_node("check_hallucination",  make_check_hallucination(kb))
-    graph.add_node("check_answer_quality", make_check_answer_quality(kb))
-    graph.add_node("reflect",              make_reflect(kb))
-    graph.add_node("direct_answer",        make_direct_answer(kb))
-    graph.add_node("clarify",              clarify)
-    graph.add_node("finalise",             finalise)
-    graph.add_edge(START, "route_query")
-    graph.add_node("introspect", make_introspect(kb))
-    graph.add_conditional_edges("route_query", route_after_routing, {
-        "retrieve": "retrieve",
-        "general":  "direct_answer",
-        "clarify":  "clarify",
-        "introspect": "introspect",
-    })
-    graph.add_edge("introspect", "finalise")
-    graph.add_edge("retrieve", "grade_documents")
-    graph.add_conditional_edges("grade_documents", route_after_grading, {
-        "generate": "generate",
-        "rewrite":  "rewrite_query",
-    })
-    graph.add_edge("rewrite_query", "retrieve")
-    graph.add_edge("generate", "check_hallucination")
-    graph.add_conditional_edges("check_hallucination", route_after_hallucination, {
-        "quality": "check_answer_quality",
-        "reflect": "reflect",
-    })
-    graph.add_conditional_edges("check_answer_quality", route_after_quality, {
-        "end":     "finalise",
-        "reflect": "reflect",
-    })
-    graph.add_conditional_edges("reflect", route_after_reflect, {
-        "rewrite": "rewrite_query",
-    })
-    graph.add_edge("direct_answer", "finalise")
-    graph.add_edge("clarify",       "finalise")
-    graph.add_edge("finalise",      END)
 
-    return graph.compile()
+    else:
+        graph.add_node("route_query",          make_route_query(kb))
+        graph.add_node("retrieve",             make_retrieve(kb))
+        graph.add_node("grade_documents",      make_grade_documents(kb))
+        graph.add_node("rewrite_query",        make_rewrite_query(kb))
+        graph.add_node("generate",             make_generate(kb))
+        graph.add_node("check_hallucination",  make_check_hallucination(kb))
+        graph.add_node("check_answer_quality", make_check_answer_quality(kb))
+        graph.add_node("reflect",              make_reflect(kb))
+        graph.add_node("direct_answer",        make_direct_answer(kb))
+        graph.add_node("clarify",              clarify)
+        graph.add_node("finalise",             finalise)
+        graph.add_node("introspect",           make_introspect(kb))
+
+        graph.add_edge(START, "route_query")
+        graph.add_conditional_edges("route_query", route_after_routing, {
+            "retrieve":   "retrieve",
+            "general":    "direct_answer",
+            "clarify":    "clarify",
+            "introspect": "introspect",
+        })
+        graph.add_edge("introspect",   "finalise")
+        graph.add_edge("retrieve",     "grade_documents")
+        graph.add_conditional_edges("grade_documents", route_after_grading, {
+            "generate": "generate",
+            "rewrite":  "rewrite_query",
+        })
+        graph.add_edge("rewrite_query", "retrieve")
+        graph.add_edge("generate",      "check_hallucination")
+        graph.add_conditional_edges("check_hallucination", route_after_hallucination, {
+            "quality": "check_answer_quality",
+            "reflect": "reflect",
+        })
+        graph.add_conditional_edges("check_answer_quality", route_after_quality, {
+            "end":     "finalise",
+            "reflect": "reflect",
+        })
+        graph.add_conditional_edges("reflect", route_after_reflect, {
+            "rewrite": "rewrite_query",
+        })
+        graph.add_edge("direct_answer", "finalise")
+        graph.add_edge("clarify",       "finalise")
+        graph.add_edge("finalise",      END)
+        return graph.compile()
 # Public interface — called from routers/chat.py
 
 async def run_agentic_rag(
