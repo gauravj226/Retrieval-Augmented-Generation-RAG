@@ -86,7 +86,7 @@ def _cache_key(
     session_id: Optional[int] = None,
 ) -> str:
     mode = "fast" if fast_mode else "quality"
-    scope = f"u:{int(user_id)}:s:{int(session_id)}" if (user_id is not None and session_id is not None) else "global"
+    scope = f"u:{int(user_id)}" if (user_id is not None and settings.ENABLE_LONG_TERM_MEMORY) else "global"
     return f"{kb.id}:{mode}:{scope}:{_normalise_query(question)}:{_history_tail_hash(chat_history)}"
 # Helper: build LLM
 def _llm(
@@ -421,7 +421,7 @@ def _cross_encoder_rerank(query: str, docs: List[Document], keep: int) -> List[D
     except Exception as e:
         logger.warning("cross-encoder rerank failed: %s", e)
         return docs[:keep]
-def make_introspect(kb):
+def make_introspect(kb: KnowledgeBase):
     llm = _gen_llm(kb)
     async def introspect(state):
         question = state['question']
@@ -436,7 +436,7 @@ def make_introspect(kb):
             hs = e.get('headings', [])
             lines_out.append(name + ((' covers: ' + ', '.join(hs[:4])) if hs else ''))
         prompt = (
-            f'You are a helpful assistant for the {kb.department!r} department.\n'
+            f'You are a helpful assistant for the {kb.department} department.\n'
             f'Based on the documents below, answer what topics you can help with.\n\n'
             f'Documents:\n' + '\n'.join(f'- {l}' for l in lines_out) +
             f'\n\nUser question: {question}\n\nAnswer:'
@@ -816,7 +816,10 @@ Answer:
 Reply ONLY: grounded or hallucinating"""
 
         result  = await llm.ainvoke([HumanMessage(content=prompt)])
-        verdict = _parse_binary(result.content, "grounded", "hallucinating")
+        rh = result.content.strip().lower()
+        verdict = ("grounded" if _rh.startswith("grounded") 
+                else "hallucinating" if _rh.startswith("hallucinating")
+                else _parse_binary(result.content, "grounded", "hallucinating"))
         logger.info(f"[check_hallucination] → {verdict}")
         return {
             "hallucination_check": verdict,

@@ -7,8 +7,14 @@ import os
 import re
 from pathlib import Path
 from typing import Dict, List
+import fcntl  # Linux/macOS only
+import sys
 
-MANIFEST_DIR = Path(os.getenv("MANIFEST_DIR", "/app/data/manifests"))
+_default_manifest_dir = (
+    Path("C:/app/data/manifests") if sys.platform == "win32"
+    else Path("/app/data/manifests")
+)
+MANIFEST_DIR = Path(os.getenv("MANIFEST_DIR", str(_default_manifest_dir)))
 
 
 def _extract_headings(text: str) -> List[str]:
@@ -24,23 +30,31 @@ def _clean_filename(filename: str) -> str:
     return name.replace("-", " ").replace("_", " ").strip()
 
 
+
+
 def upsert_manifest(kb_id: int, filename: str, text: str, pipeline: str) -> None:
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
     path = MANIFEST_DIR / f"kb_{kb_id}.json"
-    manifest: Dict = {}
-    if path.exists():
+    lock_path = path.with_suffix(".lock")
+    with open(lock_path, "w") as lock_file:
         try:
-            manifest = json.loads(path.read_text())
-        except Exception:
-            manifest = {}
-    manifest[filename] = {
-        "filename": filename,
-        "display_name": _clean_filename(filename),
-        "pipeline": pipeline,
-        "headings": _extract_headings(text),
-        "summary": " ".join(text.split()[:60]),
-    }
-    path.write_text(json.dumps(manifest, indent=2))
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            manifest: Dict = {}
+            if path.exists():
+                try:
+                    manifest = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    manifest = {}
+            manifest[filename] = {
+                "filename": filename,
+                "display_name": _clean_filename(filename),
+                "pipeline": pipeline,
+                "headings": _extract_headings(text),
+                "summary": " ".join(text.split()[:60]),
+            }
+            path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def load_manifest(kb_id: int) -> Dict:
