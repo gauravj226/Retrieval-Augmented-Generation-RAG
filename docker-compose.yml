@@ -1,4 +1,4 @@
-#version: '3.9'
+version: '3.9'
 
 services:
   chromadb:
@@ -17,7 +17,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
-
 
   ollama:
     image: ollama/ollama:latest
@@ -39,11 +38,14 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: rag_backend
+    ports:
+      - "8000:8000"
     volumes:
       - uploads_data:/app/uploads
       - sqlite_data:/app/data
@@ -69,8 +71,7 @@ services:
       dockerfile: Dockerfile
     container_name: rag_frontend
     ports:
-      - "80:80"
-      - "443:443"
+      - "3000:80"
     volumes:
       # Windows: set SSL_DIR=C:/rag-platform/ssl in .env
       # Linux:   defaults to /etc/rag-platform/ssl
@@ -80,7 +81,6 @@ services:
     networks:
       - rag_network
     restart: unless-stopped
-
 
 volumes:
   chroma_data:
