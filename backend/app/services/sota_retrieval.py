@@ -91,7 +91,17 @@ def contextualize_documents(docs: Sequence[Any]) -> List[Any]:
     return output
 
 
-_INTROSPECT_PATTERNS = [\n    r'\\bwhat (can|do) you (know|answer|help|cover|tell)',\n    r'\\bwhat topics',\n    r'\\bwhat (questions|information|documents|policies|files)',\n    r'\\bwhat (is|are) (in|available|indexed|uploaded)',\n    r'\\bwhat can i ask',\n    r'\\blist (your|the) (topics|documents|policies|files)',\n    r'\\bwhat do you have',\n]\n\n\ndef route_mode_for_query(query: str) -> str:
+_INTROSPECT_PATTERNS = [
+    r"\bwhat (can|do) you (know|answer|help|cover|tell)",
+    r"\bwhat topics",
+    r"\bwhat (questions|information|documents|policies|files)",
+    r"\bwhat (is|are) (in|available|indexed|uploaded)",
+    r"\bwhat can i ask",
+    r"\blist (your|the) (topics|documents|policies|files)",
+    r"\bwhat do you have",
+]
+
+def route_mode_for_query(query: str) -> str:
     q = (query or "").strip().lower()
     if not q:
         return "clarify"

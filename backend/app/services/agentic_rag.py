@@ -48,7 +48,6 @@ from .semantic_cache import SemanticAnswerCache
 from .bm25_index import HybridBM25Index
 from .sota_retrieval import route_mode_for_query, score_sparse_hits
 from .kb_manifest import load_manifest
-from .kb_manifest import load_manifest
 from .vector_store_factory import get_vector_store
 from .web_search import web_search
 from .ui_payload import build_ui_payload
@@ -833,12 +832,14 @@ def make_check_answer_quality(kb: KnowledgeBase):
         question   = state["question"]
         generation = state["generation"]
 
-        prompt = f"Does this answer fully address the question using sources?\\nDept: {kb.department}\\nQ: {question}\\nSources:\\n{_sp}\\nAnswer: {generation}\\n\\nReply ONLY: useful or not_useful"
-
-Question: {question}
-Answer: {generation}
-
-Reply ONLY: useful or not_useful"""
+        _qd = state.get("filtered_docs") or state.get("documents", [])
+        _sp = "\n".join((d.metadata.get("raw") or d.page_content)[:400] for d in _qd[:3])
+        prompt = (
+            f"Does this answer fully address the question using the provided sources?\n"
+            f"Department: {kb.department}\nQuestion: {question}\n"
+            f"Sources:\n{_sp}\nAnswer: {generation}\n\n"
+            f"Reply ONLY: useful or not_useful"
+        )
 
         result  = await llm.ainvoke([HumanMessage(content=prompt)])
         quality = _parse_binary(result.content, "useful", "not_useful")

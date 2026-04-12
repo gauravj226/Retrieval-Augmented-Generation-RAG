@@ -132,8 +132,7 @@ async def process_file(
         logger.error(f"Extraction failed for '{original_filename}': {e}", exc_info=True)
         raise
 
-    content = _fix_ocr_spacing(content)
-    content = _fix_ocr_spacing(content)
+
     content = _fix_ocr_spacing(content)
     if not content or not content.strip():
         raise ValueError(
@@ -148,13 +147,6 @@ async def process_file(
     )
     docs = splitter.create_documents([content], metadatas=[base_meta])
     logger.info(f"'{original_filename}' → {len(docs)} chunks (ext={ext})")
-    kb_id = (metadata or {}).get("kb_id")
-    if kb_id is not None:
-        try:
-            from .kb_manifest import upsert_manifest
-            upsert_manifest(int(kb_id), original_filename, content, ext)
-        except Exception as _me:
-            logger.warning("manifest upsert: %s", _me)
     kb_id = (metadata or {}).get("kb_id")
     if kb_id is not None:
         try:
