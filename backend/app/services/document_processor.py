@@ -21,6 +21,7 @@ import logging
 import os
 from pathlib import Path
 from typing import List
+import re
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter

@@ -930,9 +930,14 @@ def clarify(state: AgentState) -> dict:
     }
 # Finalise node — collects final_answer from generation
 def finalise(state: AgentState) -> dict:
-    return {
-        "final_answer": state.get("final_answer") or state.get("generation", "I was unable to generate an answer."),
-    }
+    answer = state.get("final_answer") or state.get("generation", "I was unable to generate an answer.")
+    if state.get("hallucination_check") == "hallucinating":
+        answer = (
+            "⚠️ I could not verify this answer against the source documents. "
+            "Please treat it with caution and check the original files.\n\n"
+            + answer
+        )
+    return {"final_answer": answer}
 # Conditional edge functions
 
 def route_after_routing(state: AgentState) -> str:
@@ -1000,7 +1005,9 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
         })
         graph.add_edge("introspect", "finalise")
         graph.add_edge("retrieve", "generate")
-        graph.add_edge("generate", "finalise")
+        graph.add_node("check_hallucination", make_check_hallucination(kb))
+        graph.add_edge("generate",            "check_hallucination")
+        graph.add_edge("check_hallucination", "finalise")
         graph.add_edge("direct_answer", "finalise")
         graph.add_edge("clarify", "finalise")
         graph.add_edge("finalise", END)
