@@ -54,3 +54,7 @@ class AgentState(TypedDict):
     # ── Self-RAG sufficiency fields ──────────────────────────────────────
     has_sufficient_docs: bool      
     rewrite_hint: str  
+
+    # ── Invoice & Entity Tracking ──────────────────────────────────────
+    active_invoice_ids: List[int]      # IDs of invoices tracked in the session
+    last_retrieved_invoices: List[Any] # Full parent document objects
