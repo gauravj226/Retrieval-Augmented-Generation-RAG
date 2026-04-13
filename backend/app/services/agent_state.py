@@ -50,3 +50,7 @@ class AgentState(TypedDict):
     # ── Limits (prevent infinite loops) ──────────────────────────────────────
     max_rewrites:   int
     max_retries:    int
+
+    # ── Self-RAG sufficiency fields ──────────────────────────────────────
+    has_sufficient_docs: bool      
+    rewrite_hint: str  
