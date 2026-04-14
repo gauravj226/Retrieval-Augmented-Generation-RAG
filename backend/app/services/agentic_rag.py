@@ -957,7 +957,7 @@ def clarify(state: AgentState) -> dict:
 
 # Node 11 — finalise
 def finalise(state: AgentState) -> dict:
-    gen = state["generation"]
+    answer = state.get("final_answer") or state.get("generation") or "I was unable to generate an answer."
     if state.get("hallucination_check") == "hallucinating":
         answer = (
             "⚠️ I could not verify this answer against the source documents. "
@@ -970,7 +970,7 @@ def finalise(state: AgentState) -> dict:
 # ── Conditional edge functions ────────────────────────────────────────────────
 
 def route_after_routing(state: AgentState) -> str:
-    return state.get("route_mode", "retrieve")
+    return state.get("route_decision", "retrieve")
 
 
 def route_after_grading(state: AgentState) -> str:
