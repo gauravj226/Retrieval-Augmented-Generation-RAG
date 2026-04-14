@@ -20,7 +20,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Tuple, Union
 import re
 
 from langchain_core.documents import Document
@@ -118,8 +118,10 @@ async def process_file(
                 base_meta[k] = str(v)
 
     try:
+        ocr_used = False
         if ext == "pdf":
-            content = _extract_pdf(file_path)
+            result = _extract_pdf(file_path)
+            content, ocr_used = result if isinstance(result, tuple) else (result, False)
         elif ext in ("docx", "doc"):
             content = _extract_docx(file_path)
         elif ext in ("xlsx", "xls"):
@@ -134,12 +136,14 @@ async def process_file(
             content = _extract_json(file_path)
         elif ext in ("png", "jpg", "jpeg", "tiff", "tif", "bmp", "gif", "webp"):
             content = _extract_image_ocr(file_path)
+            ocr_used = True
         else:
             content = _extract_text(file_path)
     except Exception as e:
         logger.error(f"Extraction failed for '{original_filename}': {e}", exc_info=True)
         raise
 
+    base_meta["ocr_used"] = ocr_used
 
     content = _fix_ocr_spacing(content)
     if not content or not content.strip():
@@ -154,7 +158,7 @@ async def process_file(
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     docs = splitter.create_documents([content], metadatas=[base_meta])
-    logger.info(f"'{original_filename}' → {len(docs)} chunks (ext={ext})")
+    logger.info(f"'{original_filename}' → {len(docs)} chunks (ext={ext}, ocr={ocr_used})")
     kb_id = (metadata or {}).get("kb_id")
     if kb_id is not None:
         try:
@@ -167,7 +171,7 @@ async def process_file(
 
 # ── PDF extractor (most complex — full pdfminer error shielding) ──────────────
 
-def _extract_pdf(file_path: str) -> str:
+def _extract_pdf(file_path: str) -> Tuple[str, bool]:
     """
     Strategy:
       1. pdfplumber page-by-page — catch pdfminer KeyError/TypeError per page
@@ -232,7 +236,7 @@ def _extract_pdf(file_path: str) -> str:
                 logger.info(
                     f"OCR succeeded: {len(ocr_text.strip())} chars from '{file_path}'"
                 )
-                return ocr_text.strip()
+                return ocr_text.strip(), True
 
             # OCR ran but produced nothing (e.g. blank pages, pure graphics)
             raise ValueError(
@@ -245,7 +249,7 @@ def _extract_pdf(file_path: str) -> str:
             # If we have any partial pdfplumber text, return it
             if text.strip():
                 logger.warning("Returning partial pdfplumber text as last resort")
-                return text.strip()
+                return text.strip(), False
             # Nothing worked — raise descriptive error
             primary = f"pdfminer: {pdfplumber_doc_error!r}" if pdfplumber_doc_error else "low text yield"
             raise ValueError(
@@ -254,7 +258,7 @@ def _extract_pdf(file_path: str) -> str:
                 "Try re-saving as PDF (File → Print → Save as PDF) and re-uploading."
             ) from ocr_err
 
-    return text.strip()
+    return text.strip(), False
 
 
 # ── Other extractors ──────────────────────────────────────────────────────────

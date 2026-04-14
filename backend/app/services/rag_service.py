@@ -225,25 +225,43 @@ async def ingest_document(
     if not chunks:
         raise ValueError(f"No content extracted from {original_filename}")
 
-    # Quality Gate
+    # OCR-aware Quality Gate
     MIN_CHUNK_QUALITY = 0.55
-    good_chunks = [c for c in chunks if _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
-    rejected = len(chunks) - len(good_chunks)
     
-    # If more than 30% rejected, try fallback
-    if rejected / len(chunks) > 0.3 and doc_type != "text":
-        logger.warning(f"High rejection rate ({rejected}/{len(chunks)}) for {original_filename}. Retrying with standard OCR.")
-        chunks = await _standard_chunks(file_path, original_filename, kb)
-        good_chunks = [c for c in chunks if _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
-        rejected = len(chunks) - len(good_chunks)
+    def _is_ocr_chunk(chunk: Document) -> bool:
+        return bool((chunk.metadata or {}).get("ocr_used", False))
+    
+    ocr_chunks = [c for c in chunks if _is_ocr_chunk(c)]
+    clean_chunks = [c for c in chunks if not _is_ocr_chunk(c)]
+    
+    if ocr_chunks:
+        good_ocr = [c for c in ocr_chunks if _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
+        rejected = len(ocr_chunks) - len(good_ocr)
+        
+        # >30% OCR rejection → retry full OCR pipeline with standard OCR
+        if (rejected / len(ocr_chunks)) > 0.3 and doc_type != "text":
+            logger.warning(
+                f"High OCR rejection rate ({rejected}/{len(ocr_chunks)}) for "
+                f"'{original_filename}'. Retrying with standard OCR."
+            )
+            retry_chunks = await _standard_chunks(file_path, original_filename, kb)
+            # Only take retry chunks that are also OCR-flagged or clean
+            good_ocr = [c for c in retry_chunks 
+                        if not _is_ocr_chunk(c) or _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
+            rejected = len(retry_chunks) - len(good_ocr)
+            
+        if rejected:
+            logger.warning(
+                f"Rejected {rejected} low-quality OCR chunks from '{original_filename}' "
+                f"(scored < {MIN_CHUNK_QUALITY})"
+            )
+        chunks = clean_chunks + good_ocr
+    else:
+        # No OCR involved — keep all chunks, no quality gate
+        chunks = clean_chunks
 
-    if not good_chunks:
-        raise ValueError(f"All chunks from {original_filename} rejected due to low quality.")
-    
-    if rejected:
-        logger.warning(f"Rejected {rejected}/{len(chunks)} low-quality chunks from {original_filename}")
-    
-    chunks = good_chunks
+    if not chunks:
+        raise ValueError(f"All chunks from '{original_filename}' rejected due to low OCR quality.")
 
     # Gap 1: Invoice ingestion pipeline
     if doc_type in ("structured", "visual") and "invoice" in original_filename.lower():
