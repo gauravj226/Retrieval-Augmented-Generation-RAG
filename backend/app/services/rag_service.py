@@ -45,6 +45,19 @@ def _repair_ocr_spacing(text: str) -> str:
 
     return fixed.strip()
 
+def _chunk_quality_score(text: str) -> float:
+    """Score 0.0–1.0. Low score = garbled OCR."""
+    if not text or len(text) < 20:
+        return 0.0
+    words = text.split()
+    # Penalise single-char isolated tokens (OCR breaks)
+    single_chars = sum(1 for w in words if len(w) == 1 and w.isalpha())
+    single_char_ratio = single_chars / max(len(words), 1)
+    # Penalise very low alnum density
+    alnum_ratio = sum(c.isalnum() for c in text) / max(len(text), 1)
+    score = alnum_ratio * (1 - single_char_ratio * 3)
+    return max(0.0, min(1.0, score))
+
 # Chroma client
 def get_chroma_client() -> chromadb.HttpClient:
     global _chroma_client
@@ -185,30 +198,52 @@ async def ingest_document(
     logger.info(f"[ingest] '{original_filename}' classified as: {doc_type}")
 
     # Route to appropriate parser
-    if doc_type == "structured":
-        if ext == "pdf":
+    async def _extract_chunks(d_type: str):
+        if d_type == "structured":
+            if ext == "pdf":
+                try:
+                    return parse_with_docling(file_path, original_filename)
+                except Exception as e:
+                    logger.warning(f"[ingest] Docling failed ({e}), falling back to standard")
+                    return await _standard_chunks(file_path, original_filename, kb)
+            else:
+                return await _standard_chunks(file_path, original_filename, kb)
+        elif d_type == "visual":
             try:
-                chunks = parse_with_docling(file_path, original_filename)
+                return parse_with_vlm(file_path, original_filename)
             except Exception as e:
-                logger.warning(f"[ingest] Docling failed ({e}), falling back to standard")
-                chunks = await _standard_chunks(file_path, original_filename, kb)
+                logger.warning(f"[ingest] VLM failed ({e}), falling back to Docling")
+                try:
+                    return parse_with_docling(file_path, original_filename)
+                except Exception:
+                    return await _standard_chunks(file_path, original_filename, kb)
         else:
-            chunks = await _standard_chunks(file_path, original_filename, kb)
-    elif doc_type == "visual":
-        try:
-            chunks = parse_with_vlm(file_path, original_filename)
-        except Exception as e:
-            logger.warning(f"[ingest] VLM failed ({e}), falling back to Docling")
-            try:
-                chunks = parse_with_docling(file_path, original_filename)
-            except Exception:
-                chunks = await _standard_chunks(file_path, original_filename, kb)
-    else:
-        # Standard text pipeline existing behaviour unchanged
-        chunks = await _standard_chunks(file_path, original_filename, kb)
+            return await _standard_chunks(file_path, original_filename, kb)
+
+    chunks = await _extract_chunks(doc_type)
 
     if not chunks:
         raise ValueError(f"No content extracted from {original_filename}")
+
+    # Quality Gate
+    MIN_CHUNK_QUALITY = 0.55
+    good_chunks = [c for c in chunks if _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
+    rejected = len(chunks) - len(good_chunks)
+    
+    # If more than 30% rejected, try fallback
+    if rejected / len(chunks) > 0.3 and doc_type != "text":
+        logger.warning(f"High rejection rate ({rejected}/{len(chunks)}) for {original_filename}. Retrying with standard OCR.")
+        chunks = await _standard_chunks(file_path, original_filename, kb)
+        good_chunks = [c for c in chunks if _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
+        rejected = len(chunks) - len(good_chunks)
+
+    if not good_chunks:
+        raise ValueError(f"All chunks from {original_filename} rejected due to low quality.")
+    
+    if rejected:
+        logger.warning(f"Rejected {rejected}/{len(chunks)} low-quality chunks from {original_filename}")
+    
+    chunks = good_chunks
 
     # Gap 1: Invoice ingestion pipeline
     if doc_type in ("structured", "visual") and "invoice" in original_filename.lower():
