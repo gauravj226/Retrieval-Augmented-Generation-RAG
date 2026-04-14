@@ -10,20 +10,17 @@ from langchain_ollama import ChatOllama
 from sqlalchemy.orm import Session
 import torch
 
-
 from ..config import settings
-from ..models.models import KnowledgeBase, Personality
+from ..models.models import KnowledgeBase, Personality, Document as DBDocument, InvoiceMetadata
 from .document_processor import process_file
 from .bm25_index import HybridBM25Index
 from .graph_memory import GraphMemoryStore
 from .sota_retrieval import contextualize_documents
 from .vector_store_factory import get_vector_store
 
-
 logger = logging.getLogger(__name__)
 _chroma_client = None
 _embeddings_cache: dict = {}
-
 
 def _repair_ocr_spacing(text: str) -> str:
     """
@@ -39,16 +36,29 @@ def _repair_ocr_spacing(text: str) -> str:
 
     # Join long runs of single-letter tokens: "T e a c h i n g" -> "Teaching"
     fixed = re.sub(r"(?:(?:\b[A-Za-z]\b\s+){2,}\b[A-Za-z]\b)", _join_spelled, fixed)
+
     # Tidy punctuation spacing noise.
     fixed = re.sub(r"\s+([,.;:!?])", r"\1", fixed)
     fixed = re.sub(r"([(\[{])\s+", r"\1", fixed)
     fixed = re.sub(r"\s+([)\]}])", r"\1", fixed)
     fixed = re.sub(r"[ \t]{2,}", " ", fixed)
+
     return fixed.strip()
 
+def _chunk_quality_score(text: str) -> float:
+    """Score 0.0–1.0. Low score = garbled OCR."""
+    if not text or len(text) < 20:
+        return 0.0
+    words = text.split()
+    # Penalise single-char isolated tokens (OCR breaks)
+    single_chars = sum(1 for w in words if len(w) == 1 and w.isalpha())
+    single_char_ratio = single_chars / max(len(words), 1)
+    # Penalise very low alnum density
+    alnum_ratio = sum(c.isalnum() for c in text) / max(len(text), 1)
+    score = alnum_ratio * (1 - single_char_ratio * 3)
+    return max(0.0, min(1.0, score))
 
-#  Chroma client 
-
+# Chroma client
 def get_chroma_client() -> chromadb.HttpClient:
     global _chroma_client
     if _chroma_client is None:
@@ -59,17 +69,15 @@ def get_chroma_client() -> chromadb.HttpClient:
         )
     return _chroma_client
 
-
-#  Metadata sanitiser 
+# Metadata sanitiser
 # ChromaDB 0.5.x ONLY allows str / int / float / bool metadata values.
 # Keys starting with '_' (LangChain internals like _type, _id) are also dropped.
-
 def _sanitize_metadata(meta: dict) -> dict:
     """Return a copy of meta containing only ChromaDB-safe primitive values."""
     safe = {}
     for k, v in meta.items():
         k = str(k)
-        if k.startswith("_"):          # drop LangChain internal keys
+        if k.startswith("_"): # drop LangChain internal keys
             continue
         if isinstance(v, bool):
             safe[k] = v
@@ -80,14 +88,12 @@ def _sanitize_metadata(meta: dict) -> dict:
         elif isinstance(v, str):
             safe[k] = v
         elif v is None:
-            safe[k] = ""              # None not allowed  use empty string
+            safe[k] = "" # None not allowed use empty string
         else:
-            safe[k] = str(v)          # lists/dicts/objects â†’ stringify
+            safe[k] = str(v) # lists/dicts/objects → stringify
     return safe
 
-
-#  Embeddings (local sentence-transformers) 
-
+# Embeddings (local sentence-transformers)
 def get_embeddings(model_name: str) -> HuggingFaceEmbeddings:
     if model_name not in _embeddings_cache:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -101,8 +107,7 @@ def get_embeddings(model_name: str) -> HuggingFaceEmbeddings:
             if device == "cuda":
                 logger.warning(
                     "Embedding model '%s' failed on CUDA, falling back to CPU: %s",
-                    model_name,
-                    e,
+                    model_name, e,
                 )
                 _embeddings_cache[model_name] = HuggingFaceEmbeddings(
                     model_name=model_name,
@@ -113,9 +118,7 @@ def get_embeddings(model_name: str) -> HuggingFaceEmbeddings:
                 raise
     return _embeddings_cache[model_name]
 
-
-#  Local LLM via Ollama 
-
+# Local LLM via Ollama
 def get_llm(kb: KnowledgeBase) -> ChatOllama:
     return ChatOllama(
         model=kb.llm_model or settings.DEFAULT_LLM_MODEL,
@@ -124,9 +127,7 @@ def get_llm(kb: KnowledgeBase) -> ChatOllama:
         num_predict=kb.max_tokens,
     )
 
-
-#  Vector store 
-
+# Vector store
 def get_vectorstore(kb: KnowledgeBase):
     return get_vector_store(
         kb=kb,
@@ -134,14 +135,12 @@ def get_vectorstore(kb: KnowledgeBase):
         chroma_client=get_chroma_client(),
     )
 
-
-#  MMR retriever 
-
+# MMR retriever
 def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Any):
-    """Maximal Marginal Relevance  balances relevance vs diversity."""
-    top_k    = kb.top_k_docs or 4
-    fetch_k  = max(kb.mmr_fetch_k or top_k * 4, top_k + 1)
-    lmb      = float(kb.mmr_lambda or 0.7)
+    """Maximal Marginal Relevance balances relevance vs diversity."""
+    top_k = kb.top_k_docs or 4
+    fetch_k = max(kb.mmr_fetch_k or top_k * 4, top_k + 1)
+    lmb = float(kb.mmr_lambda or 0.7)
     score_threshold = float(kb.score_threshold or 0.35)
     return vectorstore.as_retriever(
         search_type="mmr",
@@ -153,9 +152,7 @@ def get_mmr_retriever(kb: KnowledgeBase, vectorstore: Any):
         },
     )
 
-
-#  Personality resolver 
-
+# Personality resolver
 def resolve_system_prompt(kb: KnowledgeBase, db: Session) -> str:
     if kb.system_prompt and kb.system_prompt.strip():
         return kb.system_prompt
@@ -168,9 +165,19 @@ def resolve_system_prompt(kb: KnowledgeBase, db: Session) -> str:
         "accurately and concisely. If the answer is not in the context, say so clearly."
     )
 
+# ── Invoice Queries ───────────────────────────────────────────────────────────
+def query_invoices(db: Session, kb_id: int, vendor_name: Optional[str] = None) -> List[InvoiceMetadata]:
+    """Query structured invoice metadata for a given KB."""
+    query = db.query(InvoiceMetadata).filter(InvoiceMetadata.kb_id == kb_id)
+    if vendor_name:
+        query = query.filter(InvoiceMetadata.vendor_name.ilike(f"%{vendor_name}%"))
+    return query.all()
 
-#  Document ingestion 
+def get_invoice_by_id(db: Session, invoice_id: int) -> Optional[InvoiceMetadata]:
+    """Get full invoice metadata by ID."""
+    return db.query(InvoiceMetadata).filter(InvoiceMetadata.id == invoice_id).first()
 
+# Document ingestion
 async def ingest_document(
     file_path: str,
     original_filename: str,
@@ -178,45 +185,122 @@ async def ingest_document(
     metadata: Optional[dict] = None,
 ) -> int:
     """
-    Route document to correct ingestion pipeline based on complexity,
-    then embed summaries into ChromaDB while preserving raw content
-    in metadata for retrieval-time LLM context (multi-vector strategy).
+    Route document to correct ingestion pipeline based on complexity, then embed
+    summaries into ChromaDB while preserving raw content in metadata for
+    retrieval-time LLM context (multi-vector strategy).
     """
     from .document_classifier import classify_document
-    from .docling_parser       import parse_with_docling
-    from .vlm_parser           import parse_with_vlm
+    from .docling_parser import parse_with_docling
+    from .vlm_parser import parse_with_vlm
 
     doc_type = classify_document(file_path)
     ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else ""
     logger.info(f"[ingest] '{original_filename}' classified as: {doc_type}")
 
-    #  Route to appropriate parser 
-    if doc_type == "structured":
-        if ext == "pdf":
+    # Route to appropriate parser
+    async def _extract_chunks(d_type: str):
+        if d_type == "structured":
+            if ext == "pdf":
+                try:
+                    return parse_with_docling(file_path, original_filename)
+                except Exception as e:
+                    logger.warning(f"[ingest] Docling failed ({e}), falling back to standard")
+                    return await _standard_chunks(file_path, original_filename, kb)
+            else:
+                return await _standard_chunks(file_path, original_filename, kb)
+        elif d_type == "visual":
             try:
-                chunks = parse_with_docling(file_path, original_filename)
+                return parse_with_vlm(file_path, original_filename)
             except Exception as e:
-                logger.warning(f"[ingest] Docling failed ({e}), falling back to standard")
-                chunks = await _standard_chunks(file_path, original_filename, kb)
+                logger.warning(f"[ingest] VLM failed ({e}), falling back to Docling")
+                try:
+                    return parse_with_docling(file_path, original_filename)
+                except Exception:
+                    return await _standard_chunks(file_path, original_filename, kb)
         else:
-            chunks = await _standard_chunks(file_path, original_filename, kb)
+            return await _standard_chunks(file_path, original_filename, kb)
 
-    elif doc_type == "visual":
-        try:
-            chunks = parse_with_vlm(file_path, original_filename)
-        except Exception as e:
-            logger.warning(f"[ingest] VLM failed ({e}), falling back to Docling")
-            try:
-                chunks = parse_with_docling(file_path, original_filename)
-            except Exception:
-                chunks = await _standard_chunks(file_path, original_filename, kb)
-
-    else:
-        # Standard text pipeline  existing behaviour unchanged
-        chunks = await _standard_chunks(file_path, original_filename, kb)
+    chunks = await _extract_chunks(doc_type)
 
     if not chunks:
         raise ValueError(f"No content extracted from {original_filename}")
+
+    # OCR-aware Quality Gate
+    MIN_CHUNK_QUALITY = 0.55
+    
+    def _is_ocr_chunk(chunk: Document) -> bool:
+        return bool((chunk.metadata or {}).get("ocr_used", False))
+    
+    ocr_chunks = [c for c in chunks if _is_ocr_chunk(c)]
+    clean_chunks = [c for c in chunks if not _is_ocr_chunk(c)]
+    
+    if ocr_chunks:
+        good_ocr = [c for c in ocr_chunks if _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
+        rejected = len(ocr_chunks) - len(good_ocr)
+        
+        # >30% OCR rejection → retry full OCR pipeline with standard OCR
+        if (rejected / len(ocr_chunks)) > 0.3 and doc_type != "text":
+            logger.warning(
+                f"High OCR rejection rate ({rejected}/{len(ocr_chunks)}) for "
+                f"'{original_filename}'. Retrying with standard OCR."
+            )
+            retry_chunks = await _standard_chunks(file_path, original_filename, kb)
+            # Only take retry chunks that are also OCR-flagged or clean
+            good_ocr = [c for c in retry_chunks 
+                        if not _is_ocr_chunk(c) or _chunk_quality_score(c.page_content) >= MIN_CHUNK_QUALITY]
+            rejected = len(retry_chunks) - len(good_ocr)
+            
+        if rejected:
+            logger.warning(
+                f"Rejected {rejected} low-quality OCR chunks from '{original_filename}' "
+                f"(scored < {MIN_CHUNK_QUALITY})"
+            )
+        chunks = clean_chunks + good_ocr
+    else:
+        # No OCR involved — keep all chunks, no quality gate
+        chunks = clean_chunks
+
+    if not chunks:
+        raise ValueError(f"All chunks from '{original_filename}' rejected due to low OCR quality.")
+
+    # Gap 1: Invoice ingestion pipeline
+    if doc_type in ("structured", "visual") and "invoice" in original_filename.lower():
+        try:
+            from ..database import SessionLocal
+            from .agentic_rag import _llm
+            import json
+            
+            db = SessionLocal()
+            try:
+                full_text = " ".join(c.page_content for c in chunks[:15])
+                llm = _llm(kb, temperature=0)
+                prompt = (
+                    "Extract structured invoice data from the following text. "
+                    "Return ONLY a JSON object with: vendor_name, invoice_number, invoice_date, total_amount (number), currency (3-letter code), line_items (list of objects with description, amount).\n\n"
+                    f"TEXT:\n{full_text}"
+                )
+                res = llm.invoke(prompt)
+                data = json.loads(re.search(r"\{.*\}", res.content, re.DOTALL).group())
+                
+                invoice = InvoiceMetadata(
+                    kb_id=int(kb.id),
+                    document_id=metadata.get("doc_id") if metadata else None,
+                    filename=original_filename,
+                    vendor_name=data.get("vendor_name"),
+                    invoice_number=str(data.get("invoice_number", "")),
+                    invoice_date=data.get("invoice_date"),
+                    total_amount=data.get("total_amount"),
+                    currency=data.get("currency", "GBP"),
+                    line_items=data.get("line_items", []),
+                    raw_extracted=data
+                )
+                db.add(invoice)
+                db.commit()
+                logger.info(f"[ingest] Saved invoice metadata for {original_filename}")
+            finally:
+                db.close()
+        except Exception as ie:
+            logger.warning(f"Invoice extraction failed: {ie}")
 
     # Repair common OCR/doc-converter spacing artifacts before metadata merge
     # and before embedding/indexing, so both retrieval and generation see cleaner text.
@@ -238,6 +322,14 @@ async def ingest_document(
         for chunk in chunks:
             chunk.metadata = _sanitize_metadata(chunk.metadata or {})
 
+    # Gap 2: Manifest upsert for Docling/VLM paths
+    try:
+        from .kb_manifest import upsert_manifest
+        full_text_manifest = " ".join(c.page_content for c in chunks[:20])
+        upsert_manifest(int(kb.id), original_filename, full_text_manifest, doc_type)
+    except Exception as _me:
+        logger.warning("manifest upsert failed: %s", _me)
+
     if settings.ENABLE_CONTEXTUAL_RETRIEVAL:
         chunks = contextualize_documents(chunks)
 
@@ -249,26 +341,25 @@ async def ingest_document(
 
     # page_content = summary (what gets embedded and searched)
     # metadata.raw = full content (what gets sent to the LLM)
-    # ChromaDB stores both  retrieval returns summary+metadata together
+    # ChromaDB stores both retrieval returns summary+metadata together
     vectorstore.add_documents(chunks)
+
     kb_id = getattr(kb, "id", None)
     if kb_id is not None:
         HybridBM25Index(settings.HYBRID_BM25_DIR).upsert_chunks(kb_id=int(kb_id), docs=chunks)
+
     if settings.ENABLE_GRAPH_RAG and kb_id is not None:
         GraphMemoryStore(settings.GRAPH_MEMORY_DIR).index_documents(kb_id=int(kb_id), docs=chunks)
 
-    logger.info(f"[ingest] '{original_filename}': {len(chunks)} chunks â†’ ChromaDB")
+    logger.info(f"[ingest] '{original_filename}': {len(chunks)} chunks → ChromaDB")
     return len(chunks)
-
 
 async def _standard_chunks(
     file_path: str,
     original_filename: str,
     kb: KnowledgeBase,
 ) -> List[Document]:
-    """
-    Standard fallback chunking pipeline.
-    """
+    """ Standard fallback chunking pipeline. """
     return await process_file(
         file_path=file_path,
         original_filename=original_filename,
@@ -290,7 +381,6 @@ async def query_kb(
 ) -> Tuple[str, List[dict]]:
     # Keep compatibility for call sites that still use query_kb, but always use agentic flow.
     from .agentic_rag import run_agentic_rag
-
     answer, sources, _trace, _ui_payload = await run_agentic_rag(
         kb=kb,
         question=question,
@@ -299,15 +389,12 @@ async def query_kb(
     )
     return answer, sources
 
-
-#  Cleanup 
-
+# Cleanup
 def delete_kb_collection(collection_name: str):
     try:
         get_chroma_client().delete_collection(collection_name)
     except Exception as e:
         logger.warning(f"Could not delete collection '{collection_name}': {e}")
-
 
 def _delete_by_where(collection, where: dict) -> int:
     """Delete vectors matching a where clause and return removed count."""
@@ -317,7 +404,6 @@ def _delete_by_where(collection, where: dict) -> int:
         return 0
     collection.delete(ids=ids)
     return len(ids)
-
 
 def delete_document_vectors(
     kb: KnowledgeBase,
@@ -339,10 +425,8 @@ def delete_document_vectors(
         return 0
 
     removed = 0
-
     # New ingests carry doc_id metadata (most reliable).
     removed += _delete_by_where(collection, {"doc_id": int(doc_id)})
-
     # Extra guard for new ingests.
     if stored_filename:
         removed += _delete_by_where(collection, {"stored_filename": str(stored_filename)})
@@ -351,8 +435,7 @@ def delete_document_vectors(
     if removed == 0 and original_filename:
         try:
             removed += _delete_by_where(
-                collection,
-                {"$and": [{"source": str(original_filename)}, {"kb_id": int(kb.id)}]},
+                collection, {"$and": [{"source": str(original_filename)}, {"kb_id": int(kb.id)}]},
             )
         except Exception:
             # Some older Chroma builds have limited $and handling in where filters.
@@ -361,6 +444,7 @@ def delete_document_vectors(
     logger.info(
         f"Deleted {removed} vector chunks for doc_id={doc_id} from '{kb.chroma_collection}'"
     )
+
     try:
         HybridBM25Index(settings.HYBRID_BM25_DIR).remove_document(
             kb_id=int(kb.id),
@@ -370,6 +454,12 @@ def delete_document_vectors(
         )
     except Exception as e:
         logger.warning("BM25 index cleanup failed for kb=%s doc_id=%s: %s", kb.id, doc_id, e)
+
+    # Gap 3: delete_document_vectors() never calls delete_from_manifest()
+    try:
+        from .kb_manifest import delete_from_manifest
+        delete_from_manifest(kb_id=int(kb.id), filename=original_filename or stored_filename or "")
+    except Exception as me:
+        logger.warning("Manifest cleanup failed: %s", me)
+
     return removed
-
-
