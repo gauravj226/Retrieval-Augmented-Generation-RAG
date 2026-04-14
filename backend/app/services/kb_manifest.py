@@ -7,8 +7,13 @@ import os
 import re
 from pathlib import Path
 from typing import Dict, List
-import fcntl  # Linux/macOS only
 import sys
+
+try:
+    import fcntl  # Linux/macOS only
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
 
 _default_manifest_dir = (
     Path("C:/app/data/manifests") if sys.platform == "win32"
@@ -30,21 +35,23 @@ def _clean_filename(filename: str) -> str:
     return name.replace("-", " ").replace("_", " ").strip()
 
 
-
-
 def upsert_manifest(kb_id: int, filename: str, text: str, pipeline: str) -> None:
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
     path = MANIFEST_DIR / f"kb_{kb_id}.json"
     lock_path = path.with_suffix(".lock")
+    
     with open(lock_path, "w") as lock_file:
         try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            if HAS_FCNTL:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+            
             manifest: Dict = {}
             if path.exists():
                 try:
                     manifest = json.loads(path.read_text(encoding="utf-8"))
                 except Exception:
                     manifest = {}
+            
             manifest[filename] = {
                 "filename": filename,
                 "display_name": _clean_filename(filename),
@@ -54,7 +61,8 @@ def upsert_manifest(kb_id: int, filename: str, text: str, pipeline: str) -> None
             }
             path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            if HAS_FCNTL:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def load_manifest(kb_id: int) -> Dict:
@@ -62,7 +70,7 @@ def load_manifest(kb_id: int) -> Dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -71,9 +79,19 @@ def delete_from_manifest(kb_id: int, filename: str) -> None:
     path = MANIFEST_DIR / f"kb_{kb_id}.json"
     if not path.exists():
         return
-    try:
-        manifest = json.loads(path.read_text())
-        manifest.pop(filename, None)
-        path.write_text(json.dumps(manifest, indent=2))
-    except Exception:
-        pass
+    
+    lock_path = path.with_suffix(".lock")
+    with open(lock_path, "w") as lock_file:
+        try:
+            if HAS_FCNTL:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+                
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            if filename in manifest:
+                manifest.pop(filename)
+                path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        finally:
+            if HAS_FCNTL:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)

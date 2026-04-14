@@ -210,6 +210,45 @@ async def ingest_document(
     if not chunks:
         raise ValueError(f"No content extracted from {original_filename}")
 
+    # Gap 1: Invoice ingestion pipeline
+    if doc_type in ("structured", "visual") and "invoice" in original_filename.lower():
+        try:
+            from ..database import SessionLocal
+            from .agentic_rag import _llm
+            import json
+            
+            db = SessionLocal()
+            try:
+                full_text = " ".join(c.page_content for c in chunks[:15])
+                llm = _llm(kb, temperature=0)
+                prompt = (
+                    "Extract structured invoice data from the following text. "
+                    "Return ONLY a JSON object with: vendor_name, invoice_number, invoice_date, total_amount (number), currency (3-letter code), line_items (list of objects with description, amount).\n\n"
+                    f"TEXT:\n{full_text}"
+                )
+                res = llm.invoke(prompt)
+                data = json.loads(re.search(r"\{.*\}", res.content, re.DOTALL).group())
+                
+                invoice = InvoiceMetadata(
+                    kb_id=int(kb.id),
+                    document_id=metadata.get("doc_id") if metadata else None,
+                    filename=original_filename,
+                    vendor_name=data.get("vendor_name"),
+                    invoice_number=str(data.get("invoice_number", "")),
+                    invoice_date=data.get("invoice_date"),
+                    total_amount=data.get("total_amount"),
+                    currency=data.get("currency", "GBP"),
+                    line_items=data.get("line_items", []),
+                    raw_extracted=data
+                )
+                db.add(invoice)
+                db.commit()
+                logger.info(f"[ingest] Saved invoice metadata for {original_filename}")
+            finally:
+                db.close()
+        except Exception as ie:
+            logger.warning(f"Invoice extraction failed: {ie}")
+
     # Repair common OCR/doc-converter spacing artifacts before metadata merge
     # and before embedding/indexing, so both retrieval and generation see cleaner text.
     for chunk in chunks:
@@ -229,6 +268,14 @@ async def ingest_document(
     else:
         for chunk in chunks:
             chunk.metadata = _sanitize_metadata(chunk.metadata or {})
+
+    # Gap 2: Manifest upsert for Docling/VLM paths
+    try:
+        from .kb_manifest import upsert_manifest
+        full_text_manifest = " ".join(c.page_content for c in chunks[:20])
+        upsert_manifest(int(kb.id), original_filename, full_text_manifest, doc_type)
+    except Exception as _me:
+        logger.warning("manifest upsert failed: %s", _me)
 
     if settings.ENABLE_CONTEXTUAL_RETRIEVAL:
         chunks = contextualize_documents(chunks)
@@ -354,5 +401,12 @@ def delete_document_vectors(
         )
     except Exception as e:
         logger.warning("BM25 index cleanup failed for kb=%s doc_id=%s: %s", kb.id, doc_id, e)
+
+    # Gap 3: delete_document_vectors() never calls delete_from_manifest()
+    try:
+        from .kb_manifest import delete_from_manifest
+        delete_from_manifest(kb_id=int(kb.id), filename=original_filename or stored_filename or "")
+    except Exception as me:
+        logger.warning("Manifest cleanup failed: %s", me)
 
     return removed

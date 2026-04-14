@@ -101,6 +101,16 @@ _INTROSPECT_PATTERNS = [
     r"\bwhat do you have",
 ]
 
+_SQL_PATTERNS = [
+    r"\bhow many",
+    r"\bcount of",
+    r"\btotal (amount|sum|count)",
+    r"\baverage (amount|cost)",
+    r"\b(list|show) (all|every) invoice",
+    r"\bsum of",
+    r"\baggregate",
+]
+
 def route_mode_for_query(query: str) -> str:
     q = (query or "").strip().lower()
     if not q:
@@ -112,6 +122,9 @@ def route_mode_for_query(query: str) -> str:
     for _pt in _INTROSPECT_PATTERNS:
         if re.search(_pt, q):
             return "introspect"
+    for _pt in _SQL_PATTERNS:
+        if re.search(_pt, q):
+            return "sql"
     if re.search(r"\b[a-z]{2,}\-[a-z0-9]{2,}\b", q) or re.search(r"\b[a-f0-9]{6,}\b", q):
         return "sparse"
     if any(t in q for t in ("relationship", "depends on", "connected to", "impact of", "upstream", "downstream")):

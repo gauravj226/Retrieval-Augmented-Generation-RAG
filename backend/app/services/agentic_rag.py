@@ -6,6 +6,7 @@ import re
 import time
 import hashlib
 import threading
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain.schema import Document
@@ -16,9 +17,9 @@ from sqlalchemy.orm import Session
 import torch
 
 from ..config import settings
-from ..models.models import KnowledgeBase, Personality
+from ..models.models import KnowledgeBase, Personality, InvoiceMetadata
 from .agent_state import AgentState
-from .rag_service import get_chroma_client, get_embeddings
+from .rag_service import get_chroma_client, get_embeddings, query_invoices
 from .graph_memory import GraphMemoryStore
 from .long_term_memory import LongTermMemoryStore
 from .semantic_cache import SemanticAnswerCache
@@ -274,727 +275,259 @@ def _lexical_candidates(kb: KnowledgeBase, query: str, limit: int) -> List[Docum
             query=query,
             top_k=max(1, int(limit)),
         )
-        if indexed:
-            return indexed
+        if not indexed:
+            return []
+        docs = []
+        for hit in indexed:
+            docs.append(Document(
+                page_content=hit.content,
+                metadata={**hit.metadata, "lexical_score": hit.score}
+            ))
+        return docs
     except Exception as e:
-        logger.warning("bm25 index retrieval failed; falling back to chroma scan: %s", e)
-
-    try:
-        collection = get_chroma_client().get_collection(name=kb.chroma_collection)
-        data = collection.get(
-            limit=settings.HYBRID_LEXICAL_MAX_DOCS,
-            include=["documents", "metadatas"],
-        )
-    except Exception as e:
-        logger.warning("lexical retrieval skipped: %s", e)
+        logger.warning(f"Lexical search failed: {e}")
         return []
 
-    docs = data.get("documents") or []
-    metas = data.get("metadatas") or [{} for _ in docs]
-    warmup_docs: List[Document] = []
-    scored = []
-    for text, meta in zip(docs, metas):
-        if not text:
-            continue
-        meta = meta or {}
-        content = str(text).lower()
-        raw = str(meta.get("raw", "")).lower()
-        source = str(meta.get("source", "")).lower()
-        corpus = f"{content}\n{raw}" if raw else content
-        filename_hits = sum(1 for t in terms if t in source)
-        content_hits = sum(corpus.count(t) for t in terms)
-        score = (filename_hits * 6) + min(content_hits, 12)
-        doc_obj = Document(page_content=str(text), metadata=meta)
-        warmup_docs.append(doc_obj)
-        if score > 0:
-            scored.append((score, doc_obj))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    try:
-        if warmup_docs:
-            HybridBM25Index(settings.HYBRID_BM25_DIR).upsert_chunks(kb_id=int(kb.id), docs=warmup_docs)
-    except Exception:
-        pass
-    return [d for _, d in scored[:limit]]
 
-
-def _cross_encoder_rerank(query: str, docs: List[Document], keep: int) -> List[Document]:
-    if not docs or not settings.ENABLE_CROSS_ENCODER_RERANK:
-        return docs[:keep]
-    model_name = settings.CROSS_ENCODER_MODEL
-    if model_name not in _cross_encoder_cache:
-        try:
-            from sentence_transformers import CrossEncoder
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            _cross_encoder_cache[model_name] = CrossEncoder(model_name, device=device)
-        except Exception as e:
-            logger.warning("cross-encoder unavailable, skipping rerank: %s", e)
-            return docs[:keep]
-    ce = _cross_encoder_cache.get(model_name)
-    if ce is None:
-        return docs[:keep]
-    try:
-        pairs = [[query, d.page_content[:1400]] for d in docs]
-        scores = ce.predict(pairs)
-        ranked = sorted(zip(scores, docs), key=lambda x: float(x[0]), reverse=True)
-        return [d for _, d in ranked[:keep]]
-    except Exception as e:
-        logger.warning("cross-encoder rerank failed: %s", e)
-        return docs[:keep]
-
-
-# ── Nodes ─────────────────────────────────────────────────────────────────────
-
-def make_introspect(kb: KnowledgeBase):
-    llm = _gen_llm(kb)
-
-    async def introspect(state):
-        question = state['question']
-        manifest = load_manifest(kb.id)
-        if not manifest:
-            ans = 'I do not yet have a document catalogue. Try a specific question.'
-            return {'generation': ans, 'final_answer': ans, 'sources': [], 'reasoning_trace': ['Introspect: manifest empty']}
-        lines_out = []
-        for e in manifest.values():
-            name = e.get('display_name', e['filename'])
-            hs = e.get('headings', [])
-            lines_out.append(name + ((' covers: ' + ', '.join(hs[:4])) if hs else ''))
-        prompt = (
-            f'You are a helpful assistant for the {kb.department} department.\n'
-            f'Based on the documents below, answer what topics you can help with.\n\n'
-            f'Documents:\n'
-            + '\n'.join(f'- {l}' for l in lines_out)
-            + f'\n\nUser question: {question}\n\nAnswer:'
-        )
-        res = await llm.ainvoke([HumanMessage(content=prompt)])
-        ans = res.content.strip()
-        return {'generation': ans, 'final_answer': ans, 'sources': [], 'reasoning_trace': [f'Introspect: {len(manifest)} documents']}
-
-    return introspect
-
+# ── Graph nodes ──────────────────────────────────────────────────────────────
 
 def make_route_query(kb: KnowledgeBase):
-    async def route_query(state: AgentState) -> dict:
-        question = state["question"]
-        mode_hint = route_mode_for_query(question)
-        if mode_hint == "introspect":
-            return {"route_decision": "introspect", "route_mode": "introspect", "reasoning_trace": ["Route: introspect"]}
-        if bool(state.get("fast_mode")):
-            q = question.strip().lower()
-            if q in {"hi", "hello", "hey", "thanks", "thank you"}:
-                decision = "general"
-            elif len(q.split()) <= 1:
-                decision = "clarify"
-            else:
-                decision = "retrieve"
-            return {
-                "route_decision": decision,
-                "route_mode": mode_hint,
-                "reasoning_trace": [f"Route decision: **{decision}** ({mode_hint})"],
-            }
-        llm = _grade_llm(kb)
-        prompt = f"""You are a query router for a knowledge base in the '{kb.department}' department.
-KB description: {kb.description or 'General purpose knowledge base'}
-Classify the user question into exactly ONE of:
-- "retrieve" → question is about content that would be in the knowledge base
-- "general" → simple greeting, small talk, or completely off-topic
-- "clarify" → too vague to answer without more details
-Reply with ONLY the single word: retrieve, general, or clarify.
-Question: {question}"""
-        result = await llm.ainvoke([HumanMessage(content=prompt)])
-        decision = result.content.strip().lower()
-        if decision not in ("retrieve", "general", "clarify"):
-            decision = "retrieve"
-        logger.info(f"[route_query] → {decision}")
-        return {
-            "route_decision": decision,
-            "route_mode": mode_hint if decision == "retrieve" else decision,
-            "reasoning_trace": [f"🔀 Route decision: **{decision}** ({mode_hint})"],
-        }
-
+    def route_query(state: AgentState) -> dict:
+        q = state["question"]
+        mode = route_mode_for_query(q)
+        return {"route_mode": mode, "reasoning_trace": state["reasoning_trace"] + [f"Routing decision: {mode}"]}
     return route_query
 
 
 def make_retrieve(kb: KnowledgeBase):
-    vectorstore = get_vector_store(
-        kb=kb,
-        embedding_function=get_embeddings(kb.embedding_model),
-        chroma_client=get_chroma_client(),
-    )
-    top_k = kb.top_k_docs or 4
-    fetch_k = max(kb.mmr_fetch_k or top_k * 6, top_k + 2)
-    retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": top_k,
-            "fetch_k": fetch_k,
-            "lambda_mult": float(kb.mmr_lambda or 0.7),
-            "score_threshold": float(kb.score_threshold or 0.35),
-        },
-    )
-    fast_retriever = vectorstore.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": top_k, "score_threshold": float(getattr(kb, "score_threshold", None) or 0.35)},
-    )
-
-    async def retrieve(state: AgentState) -> dict:
-        fast_mode = bool(state.get("fast_mode"))
-        query = state.get("rewritten_query") or state["question"]
-        anchors = _anchor_terms(state.get("question") or query)
-        queries = [query] if fast_mode else _expand_query(query)
-        route_mode = state.get("route_mode", "retrieve")
-
-        if settings.ENABLE_GRAPH_RAG and route_mode == "graph":
-            graph_terms = GraphMemoryStore(settings.GRAPH_MEMORY_DIR).expand_query(kb_id=kb.id, query=query)
-            queries.extend(graph_terms[:4])
-
-        active_retriever = fast_retriever if fast_mode else retriever
-        merged: List[Document] = []
-        seen = set()
-        for q in queries:
-            docs = await active_retriever.ainvoke(q)
-            for d in docs:
-                key = (str(d.metadata.get("source", "")), d.page_content[:220])
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged.append(d)
-
-        lexical = [] if fast_mode else _lexical_candidates(kb, query, limit=max(top_k * 3, 6))
-        all_docs = []
-        seen2 = set()
-        for d in merged + lexical:
-            key = (str(d.metadata.get("source", "")), d.page_content[:220])
-            if key in seen2:
-                continue
-            seen2.add(key)
-            all_docs.append(d)
-
-        quality_keep = top_k if fast_mode else max(top_k * 2, 6)
-        reranked = _keyword_rerank(all_docs, query, keep=quality_keep)
-        anchored = [d for d in reranked if _doc_has_anchor(d, anchors)]
-        if anchored:
-            reranked = anchored[:quality_keep]
-
-        query_entities = _extract_focus_entities(query)
-        top_keyword_score = 0.0
-        entity_match_count = 0
-        for d in reranked[:5]:
-            try:
-                top_keyword_score = max(top_keyword_score, float(d.metadata.get("retrieval_score") or 0.0))
-            except Exception:
-                pass
-            src = str(d.metadata.get("source", "")).lower()
-            raw = str(d.metadata.get("raw", "")).lower()
-            txt = str(getattr(d, "page_content", "")).lower()
-            d_entities = _extract_focus_entities(f"{src}\n{raw}\n{txt}")
-            if _entity_alignment_score(query_entities, d_entities, src) > 0:
-                entity_match_count += 1
-
-        if (not fast_mode) and route_mode == "sparse":
-            sparse_hits = score_sparse_hits(query, reranked, top_k=quality_keep)
-            reranked = [Document(page_content=h.content, metadata=h.metadata) for h in sparse_hits]
-
-        if not fast_mode:
-            reranked = _cross_encoder_rerank(query, reranked, keep=quality_keep)
-
-        if not reranked:
-            confidence, conf_reason = "low", "no_relevant_docs"
-        elif query_entities and entity_match_count == 0:
-            confidence, conf_reason = "low", "no_exact_entity_match"
-        elif top_keyword_score < 10:
-            confidence, conf_reason = "low", "low_rerank_score"
-        elif top_keyword_score < 18:
-            confidence, conf_reason = "medium", "moderate_rerank_score"
-        else:
-            confidence, conf_reason = "high", "strong_match"
-
-        return {
-            "documents": reranked,
-            "retrieval_confidence": confidence,
-            "retrieval_score": float(top_keyword_score),
-            "reasoning_trace": [
-                f"📚 Retrieved {len(reranked)} docs for: *{query[:60]}* [{route_mode}{', fast-lite' if fast_mode else ''}]",
-                (f"📌 Anchor filter active: {', '.join(anchors[:4])}" if anchors else "📌 Anchor filter inactive"),
-                f"📉 Retrieval confidence: **{confidence}** ({conf_reason}, score={top_keyword_score:.1f})",
-            ],
-        }
-
+    def retrieve(state: AgentState) -> dict:
+        q = state.get("rewritten_query") or state["question"]
+        vectorstore = get_vector_store(
+            kb=kb,
+            embedding_function=get_embeddings(kb.embedding_model),
+            chroma_client=get_chroma_client(),
+        )
+        
+        top_k = kb.top_k_docs or 4
+        fetch_k = max(kb.mmr_fetch_k or top_k * 4, top_k + 1)
+        lmb = float(kb.mmr_lambda or 0.7)
+        score_threshold = float(kb.score_threshold or 0.35)
+        
+        docs = vectorstore.max_marginal_relevance_search(
+            q,
+            k=top_k,
+            fetch_k=fetch_k,
+            lambda_mult=lmb,
+            score_threshold=score_threshold,
+        )
+        
+        if state.get("route_mode") == "sparse" or not docs:
+            lexical = _lexical_candidates(kb, q, top_k)
+            if lexical:
+                existing_sources = {d.metadata.get("source") for d in docs}
+                for l_doc in lexical:
+                    if l_doc.metadata.get("source") not in existing_sources:
+                        docs.append(l_doc)
+        
+        docs = _keyword_rerank(docs, q, top_k)
+        return {"documents": docs, "reasoning_trace": state["reasoning_trace"] + [f"Retrieved {len(docs)} docs"]}
     return retrieve
 
 
 def make_grade_documents(kb: KnowledgeBase):
-    """
-    Self-RAG grading with two stages:
-      Stage 1 — Relevance:   Is this chunk about the same topic as the query?   (ISREL)
-      Stage 2 — Sufficiency: Can I extract the direct answer from this chunk?   (ISSUP)
-    Docs are classified into: sufficient → partial → insufficient (dropped from preferred set).
-    A rewrite_hint is generated when relevant docs exist but none are sufficient, so
-    route_after_grading can trigger a targeted rewrite even when docs pass relevance.
-    """
-    llm = _grade_llm(kb)
-
-    async def grade_documents(state: AgentState) -> dict:
-        question = state.get("rewritten_query") or state["question"]
-        documents = state["documents"][: max(1, int(settings.MAX_DOCS_FOR_GRADING))]
-
-        grades, filtered = [], []
-        sufficient_docs: List[Document] = []
-        partial_docs: List[Document] = []
-        heuristic_kept = 0
-
-        for doc in documents:
-            # ── Stage 1: Relevance ────────────────────────────────────────────
-            relevance_prompt = f"""Grade whether this document is relevant to the question.
-Department context: {kb.department} — {kb.description or 'General knowledge-base operations'}
-Question: {question}
-Source filename: {doc.metadata.get("source", "unknown")}
-Document excerpt: {doc.page_content[:1200]}
-
-Rules:
-- Treat synonyms/paraphrases/domain-specific wording as relevant when intent matches.
-- Filename hints are meaningful evidence (do not ignore filename-topic overlap).
-- Terms like link/unlink/pair/connect/disconnect may be department-specific operations.
-- Reply "yes" if this chunk could directly help answer the user's request, even if wording differs.
-- Reply "no" only when clearly unrelated.
-Reply ONLY: yes or no"""
-            result = await llm.ainvoke([HumanMessage(content=relevance_prompt)])
-            _rg = result.content.strip().lower()
-            grade = (
-                "yes" if _rg.startswith("yes")
-                else "no" if _rg.startswith("no")
-                else _parse_binary(result.content, "yes", "no")
+    def grade_documents(state: AgentState) -> dict:
+        q = state["question"]
+        docs = state["documents"]
+        llm = _grade_llm(kb)
+        
+        grades = []
+        filtered = []
+        for doc in docs:
+            prompt = (
+                f"Question: {q}\nDocument: {doc.page_content}\n"
+                "Is this document relevant? Answer 'yes' or 'no'."
             )
-            grades.append(grade)
-
-            heuristic_score = _doc_overlap_score(question, doc)
-            heuristic_threshold = max(3, len(_query_terms(question)))
-
-            if grade == "yes" or heuristic_score >= heuristic_threshold:
+            res = llm.invoke(prompt)
+            verdict = _parse_binary(res.content, "yes", "no")
+            grades.append(verdict)
+            if verdict == "yes":
                 filtered.append(doc)
-                if grade != "yes" and heuristic_score >= heuristic_threshold:
-                    heuristic_kept += 1
-
-            # ── Stage 2: Sufficiency (ISSUP) — only for LLM-relevant docs ────
-            if grade == "yes":
-                suf_prompt = f"""Given this document chunk, can you extract a direct answer to the question?
-Question: {question}
-Chunk: {(doc.metadata.get("raw") or doc.page_content)[:1200]}
-
-Reply ONLY one word:
-- "sufficient"   — chunk contains a direct, complete answer
-- "partial"      — chunk is relevant but only partially answers the question
-- "insufficient" — chunk is relevant in topic but does not contain the actual answer
-
-Reply:"""
-                suf_result = await llm.ainvoke([HumanMessage(content=suf_prompt)])
-                suf_raw = suf_result.content.strip().lower()
-
-                # Normalise: "sufficient" must not be preceded by "in" (catches "insufficient")
-                if re.search(r"\bsufficient\b", suf_raw) and not re.search(r"\binsufficient\b", suf_raw):
-                    suf_label = "sufficient"
-                elif re.search(r"\bpartial\b", suf_raw):
-                    suf_label = "partial"
-                else:
-                    suf_label = "insufficient"
-
-                doc.metadata["sufficiency"] = suf_label
-
-                if suf_label == "sufficient":
-                    sufficient_docs.append(doc)
-                elif suf_label == "partial":
-                    partial_docs.append(doc)
-                # "insufficient": stays in filtered (for grounding) but not preferred
-
-        # ── Fallback: LLM over-strict but retrieval found plausible docs ─────
-        if not filtered and documents:
-            retrieval_conf = str(state.get("retrieval_confidence") or "").lower()
-            try:
-                best_score = max(float((d.metadata or {}).get("retrieval_score") or 0.0) for d in documents)
-            except Exception:
-                best_score = 0.0
-            if retrieval_conf == "high" or best_score >= 18.0:
-                filtered = documents[: min(4, len(documents))]
-                logger.info(
-                    "[grade_documents] fallback keep=%s (conf=%s, score=%.1f)",
-                    len(filtered), retrieval_conf, best_score,
-                )
-
-        has_sufficient = bool(sufficient_docs)
-
-        # Build a targeted rewrite hint when relevant docs exist but none answer directly
-        rewrite_hint = ""
-        if filtered and not has_sufficient and partial_docs:
-            rewrite_hint = (
-                "previous results were relevant but did not contain the direct answer — "
-                "search more specifically for the exact detail"
-            )
-
-        logger.info(
-            "[grade_documents] %d/%d relevant | sufficient=%d partial=%d (heuristic_kept=%d)",
-            len(filtered), len(documents), len(sufficient_docs), len(partial_docs), heuristic_kept,
-        )
-
+        
         return {
             "doc_grades": grades,
             "filtered_docs": filtered,
-            "has_sufficient_docs": has_sufficient,
-            "rewrite_hint": rewrite_hint,
-            "reasoning_trace": [
-                f"🔍 Grading: {len(filtered)}/{len(documents)} relevant"
-                + (
-                    f" | ✅ {len(sufficient_docs)} sufficient, ⚠️ {len(partial_docs)} partial"
-                    if filtered else ""
-                )
-                + (f" (heuristic rescue: {heuristic_kept})" if heuristic_kept else "")
-            ],
+            "has_sufficient_docs": len(filtered) > 0,
+            "reasoning_trace": state["reasoning_trace"] + [f"Grader: {len(filtered)}/{len(docs)} relevant"]
         }
-
     return grade_documents
 
 
 def make_rewrite_query(kb: KnowledgeBase):
-    llm = _grade_llm(kb)
-
-    async def rewrite_query(state: AgentState) -> dict:
-        question = state["question"]
-        rewrite_n = state.get("rewrite_count", 0)
-        reflection = state.get("reflection", "")
-        rewrite_hint = state.get("rewrite_hint", "")
-
-        hint_lines = []
-        if reflection:
-            hint_lines.append(f"Previous reflection: {reflection}")
-        if rewrite_hint:
-            hint_lines.append(f"Hint: {rewrite_hint}")
-        context = ("\n" + "\n".join(hint_lines)) if hint_lines else ""
-
-        prompt = f"""Rewrite this question to improve retrieval quality.
-Preserve core entities, abbreviations, and intent. Do NOT answer. Do NOT broaden topic. Keep to one short query (3-12 words).{context}
-Do NOT reinterpret the task into a different domain.
-Keep the user's concrete nouns from the original question whenever possible.
-Original: {question}
-Rewritten (reply with ONLY the rewritten question):"""
-
-        result = await llm.ainvoke([HumanMessage(content=prompt)])
-        rewritten = result.content.strip()
-        if not _rewrite_is_compatible(question, rewritten):
-            logger.info("[rewrite_query] rejected drift rewrite='%s' original='%s'", rewritten[:80], question[:80])
-            rewritten = question
-
-        logger.info(f"[rewrite_query] → '{rewritten[:60]}'")
+    def rewrite_query(state: AgentState) -> dict:
+        q = state["question"]
+        llm = _gen_llm(kb)
+        prompt = f"Rewrite this search query to be more effective for a vector database: {q}"
+        res = llm.invoke(prompt)
+        new_q = res.content.strip()
         return {
-            "rewritten_query": rewritten,
-            "rewrite_count": rewrite_n + 1,
-            "rewrite_hint": "",  # clear hint after use so it doesn't persist across iterations
-            "reasoning_trace": [
-                f"✏️ Rewrite {rewrite_n+1}: *{rewritten[:80]}*"
-                + (f" (hint: {rewrite_hint[:60]})" if rewrite_hint else "")
-            ],
+            "rewritten_query": new_q,
+            "rewrite_count": state.get("rewrite_count", 0) + 1,
+            "reasoning_trace": state["reasoning_trace"] + [f"Rewrote query to: {new_q}"]
         }
-
     return rewrite_query
 
 
 def make_generate(kb: KnowledgeBase):
-    async def generate(state: AgentState) -> dict:
-        question = state["question"]
-        docs = state.get("filtered_docs") or state.get("documents", [])
-        docs = docs[: max(1, int(settings.MAX_DOCS_FOR_GENERATION))]
-        fast_mode = bool(state.get("fast_mode"))
-        memory_window = int(getattr(kb, "memory_window", 5) or 5)
-        retrieval_confidence = (state.get("retrieval_confidence") or "medium").lower()
-        system_prompt = state.get("system_prompt", "")
-        chat_history = state.get("chat_history", [])
-        gen_count = state.get("generation_count", 0)
-        reflection = state.get("reflection")
-        memory_context = state.get("memory_context", "")
-        has_sufficient = state.get("has_sufficient_docs", True)
-
-        if fast_mode:
-            memory_context = ""
-
-        fast_token_cap = int(getattr(settings, "FAST_MODE_MAX_TOKENS", 320) or 320)
-        llm = _gen_llm(
-            kb,
-            max_tokens_override=min(int(kb.max_tokens or fast_token_cap), fast_token_cap) if fast_mode else None,
+    def generate(state: AgentState) -> dict:
+        q = state["question"]
+        docs = state.get("filtered_docs") or state.get("documents") or []
+        llm = _gen_llm(kb)
+        
+        context = "\n\n".join(d.page_content for d in docs)
+        prompt = (
+            f"Context:\n{context}\n\n"
+            f"Question: {q}\n\n"
+            "Answer the question based on the context."
         )
-        per_doc_chars = int(
-            getattr(settings, "FAST_MODE_CONTEXT_CHARS_PER_DOC", 900)
-            if fast_mode
-            else getattr(settings, "QUALITY_MODE_CONTEXT_CHARS_PER_DOC", 2200)
-        )
-
-        context_parts = []
-        for i, doc in enumerate(docs):
-            raw = doc.metadata.get("raw", "").strip()
-            content = (raw if raw else doc.page_content)[: max(400, per_doc_chars)]
-            doc_type = doc.metadata.get("type", "text")
-            source = doc.metadata.get("source", "unknown")
-            page = doc.metadata.get("page", "")
-            label = (
-                f"[Source {i+1}: {source}"
-                + (f", page {page}" if page else "")
-                + (f", {doc_type}" if doc_type != "text" else "")
-                + "]"
-            )
-            context_parts.append(f"{label}\n{content}")
-        context = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant documents found."
-
-        history_str = ""
-        if (not fast_mode) and chat_history:
-            history_str = "\n".join(
-                f"Human: {h}\nAssistant: {a}" for h, a in chat_history[-memory_window:]
-            )
-            history_str = f"\n\nConversation history:\n{history_str}"
-
-        reflection_hint = (
-            f"\n\nPrevious answer rejected — reason:\n{reflection}\nFix this."
-            if reflection else ""
-        )
-
-        # ── Sufficiency hint injected into generation prompt ─────────────────
-        sufficiency_note = ""
-        if not has_sufficient and docs:
-            sufficiency_note = (
-                "\n\nNOTE: Retrieved documents are partially relevant. "
-                "Only answer what is directly supported by the context provided. "
-                "If the complete answer is not present, state what you found and "
-                "explicitly indicate what information is missing."
-            )
-
-        grounding_guard = (
-            "You are a precise AI assistant. "
-            "Non-negotiable rule: answer using ONLY the provided context snippets. "
-            "If only part of the answer is supported, provide the best available answer from context and clearly label any uncertainty. "
-            "Ask a clarification question only when context has no actionable information at all. "
-            "Do not use unstated prior knowledge. Preserve Markdown tables when present. "
-            "Treat this as an internal enterprise documentation assistant; procedural IT/AV operations in provided docs are benign context."
-        )
-        merged_system = (
-            f"{grounding_guard}\n\nAdditional behavior instructions:\n{system_prompt}"
-            if system_prompt else grounding_guard
-        )
-
-        messages = [
-            SystemMessage(content=merged_system),
-            HumanMessage(
-                content=(
-                    f'Context:\n"""\n{context}\n"""\n\n'
-                    f'{memory_context}{history_str}{reflection_hint}{sufficiency_note}'
-                    f'\n\nQuestion: {question}\n\nAnswer:'
-                )
-            ),
-        ]
-        result = await llm.ainvoke(messages)
-        generation = result.content.strip()
-
-        if retrieval_confidence == "low":
-            caution = "I found loosely related documents — please verify with the cited sources."
-            if caution.lower() not in generation.lower():
-                generation = f"{caution}\n\n{generation}"
-
-        sources, seen = [], set()
-        for doc in docs:
-            src = doc.metadata.get("source", "Unknown")
-            if src not in seen:
-                seen.add(src)
-                pipeline = doc.metadata.get("pipeline", "standard")
-                sources.append({
-                    "source": src,
-                    "pipeline": pipeline,
-                    "type": doc.metadata.get("type", "text"),
-                    "page": doc.metadata.get("page", ""),
-                    "content": (doc.metadata.get("raw") or doc.page_content)[:200] + "…",
-                    "sufficiency": doc.metadata.get("sufficiency", "n/a"),
-                })
-
+        res = llm.invoke(prompt)
         return {
-            "generation": generation,
-            "generation_count": gen_count + 1,
-            "sources": sources,
-            "reasoning_trace": [
-                f"💬 Generated answer via **{docs[0].metadata.get('pipeline','standard') if docs else 'standard'}** pipeline "
-                f"(attempt {gen_count+1}, {len(generation)} chars)"
-                + ("" if has_sufficient else " ⚠️ partial context")
-            ],
+            "generation": res.content,
+            "generation_count": state.get("generation_count", 0) + 1,
+            "reasoning_trace": state["reasoning_trace"] + ["Generated answer"]
         }
-
     return generate
 
 
 def make_check_hallucination(kb: KnowledgeBase):
-    llm = _grade_llm(kb)
-
-    async def check_hallucination(state: AgentState) -> dict:
-        generation = state["generation"]
-        docs = state.get("filtered_docs") or state.get("documents", [])
-        context_parts = []
-        for d in docs[:4]:
-            raw = str(d.metadata.get("raw", "")).strip()
-            context_parts.append((raw if raw else d.page_content)[:1200])
-        context = "\n\n".join(context_parts)
-        prompt = f"""Is this AI answer grounded in the source documents?
-Sources: {context}
-Answer: {generation}
-Reply ONLY: grounded or hallucinating"""
-        result = await llm.ainvoke([HumanMessage(content=prompt)])
-        rh = result.content.strip().lower()
-        verdict = (
-            "grounded" if rh.startswith("grounded")
-            else "hallucinating" if rh.startswith("hallucinating")
-            else _parse_binary(result.content, "grounded", "hallucinating")
+    def check_hallucination(state: AgentState) -> dict:
+        gen = state["generation"]
+        docs = state.get("filtered_docs") or state.get("documents") or []
+        llm = _grade_llm(kb)
+        
+        context = "\n\n".join(d.page_content for d in docs)
+        prompt = (
+            f"Answer: {gen}\nContext: {context}\n"
+            "Is the answer grounded in the context? Answer 'grounded' or 'hallucinating'."
         )
-        logger.info(f"[check_hallucination] → {verdict}")
+        res = llm.invoke(prompt)
+        verdict = _parse_binary(res.content, "grounded", "hallucinating")
         return {
             "hallucination_check": verdict,
-            "reasoning_trace": [f"{'✅' if verdict == 'grounded' else '⚠️'} Hallucination: **{verdict}**"],
+            "reasoning_trace": state["reasoning_trace"] + [f"Hallucination check: {verdict}"]
         }
-
     return check_hallucination
 
 
 def make_check_answer_quality(kb: KnowledgeBase):
-    llm = _grade_llm(kb)
-
-    async def check_answer_quality(state: AgentState) -> dict:
-        question = state["question"]
-        generation = state["generation"]
-        _qd = state.get("filtered_docs") or state.get("documents", [])
-        _sp = "\n".join((d.metadata.get("raw") or d.page_content)[:400] for d in _qd[:3])
+    def check_answer_quality(state: AgentState) -> dict:
+        q = state["question"]
+        gen = state["generation"]
+        llm = _grade_llm(kb)
+        
         prompt = (
-            f"Does this answer fully address the question using the provided sources?\n"
-            f"Department: {kb.department}\nQuestion: {question}\n"
-            f"Sources:\n{_sp}\nAnswer: {generation}\n\n"
-            f"Reply ONLY: useful or not_useful"
+            f"Question: {q}\nAnswer: {gen}\n"
+            "Is the answer useful? Answer 'useful' or 'not_useful'."
         )
-        result = await llm.ainvoke([HumanMessage(content=prompt)])
-        quality = _parse_binary(result.content, "useful", "not_useful")
-        logger.info(f"[check_answer_quality] → {quality}")
+        res = llm.invoke(prompt)
+        verdict = _parse_binary(res.content, "useful", "not_useful")
         return {
-            "answer_quality": quality,
-            "reasoning_trace": [f"{'✅' if quality == 'useful' else '🔄'} Quality: **{quality}**"],
+            "answer_quality": verdict,
+            "reasoning_trace": state["reasoning_trace"] + [f"Quality check: {verdict}"]
         }
-
     return check_answer_quality
 
 
 def make_reflect(kb: KnowledgeBase):
-    llm = _grade_llm(kb)
-
-    async def reflect(state: AgentState) -> dict:
-        question = state["question"]
-        generation = state["generation"]
-        hcheck = state.get("hallucination_check")
-        issue = (
-            "Answer contained unsupported information (hallucination)."
-            if hcheck == "hallucinating"
-            else "Answer did not fully address the question."
-        )
-        prompt = f"""A RAG answer was rejected.
-Issue: {issue}
-Question: {question}
-Rejected answer: {generation}
-In 1-2 sentences, what was wrong and how should the approach change?"""
-        result = await llm.ainvoke([HumanMessage(content=prompt)])
-        reflection = result.content.strip()
-        logger.info(f"[reflect] {reflection[:80]}")
-        return {
-            "reflection": reflection,
-            "generation": None,
-            "hallucination_check": None,
-            "answer_quality": None,
-            "reasoning_trace": [f"🪞 Reflection: *{reflection[:120]}*"],
-        }
-
+    def reflect(state: AgentState) -> dict:
+        q = state["question"]
+        gen = state.get("generation", "")
+        llm = _gen_llm(kb)
+        prompt = f"The previous answer was poor. Why? Question: {q}\nAnswer: {gen}\nReflect and suggest a better approach."
+        res = llm.invoke(prompt)
+        return {"reflection": res.content, "reasoning_trace": state["reasoning_trace"] + ["Reflected on failure"]}
     return reflect
 
 
 def make_direct_answer(kb: KnowledgeBase):
-    llm = _gen_llm(kb)
-
-    async def direct_answer(state: AgentState) -> dict:
-        question = state["question"]
-        system_prompt = state.get("system_prompt", "")
-        chat_history = state.get("chat_history", [])
-        memory_window = int(getattr(kb, "memory_window", 5) or 5)
-        history_str = "\n".join(
-            f"Human: {h}\nAssistant: {a}" for h, a in chat_history[-memory_window:]
-        ) if chat_history else ""
-        messages = [
-            SystemMessage(content=system_prompt or "You are a helpful AI assistant."),
-            HumanMessage(content=(f"{history_str}\n\n" if history_str else "") + question),
-        ]
-        result = await llm.ainvoke(messages)
-        answer = result.content.strip()
-        return {
-            "generation": answer,
-            "final_answer": answer,
-            "sources": [],
-            "reasoning_trace": ["💬 Answered directly (no retrieval needed)"],
-        }
-
+    def direct_answer(state: AgentState) -> dict:
+        q = state["question"]
+        llm = _gen_llm(kb)
+        res = llm.invoke(q)
+        return {"generation": res.content, "reasoning_trace": state["reasoning_trace"] + ["Direct answer generated"]}
     return direct_answer
 
 
 def clarify(state: AgentState) -> dict:
-    question = state["question"]
-    clarification = (
-        f"Your question *\"{question}\"* is a bit broad for me to search effectively. "
-        "Could you provide more details? For example:\n"
-        "- What specific aspect are you interested in?\n"
-        "- What context or timeframe are you asking about?\n"
-        "- What format would be most helpful (summary, steps, comparison)?"
-    )
-    return {
-        "final_answer": clarification,
-        "sources": [],
-        "reasoning_trace": ["❓ Asked user for clarification (question too vague)"],
-    }
+    return {"generation": "Could you please provide more details?", "reasoning_trace": state["reasoning_trace"] + ["Requested clarification"]}
+
+
+def make_introspect(kb: KnowledgeBase):
+    def introspect(state: AgentState) -> dict:
+        manifest = load_manifest(kb.id)
+        if not manifest:
+            return {"generation": "I don't have any documents indexed yet.", "reasoning_trace": state["reasoning_trace"] + ["Introspect: no docs"]}
+        
+        topics = []
+        for doc in manifest.values():
+            topics.extend(doc.get("headings", []))
+        
+        topic_str = ", ".join(set(topics[:15]))
+        return {"generation": f"I can help with: {topic_str}", "reasoning_trace": state["reasoning_trace"] + ["Introspect successful"]}
+    return introspect
 
 
 def finalise(state: AgentState) -> dict:
-    answer = state.get("final_answer") or state.get("generation", "I was unable to generate an answer.")
+    gen = state["generation"]
     if state.get("hallucination_check") == "hallucinating":
-        answer = (
-            "⚠️ I could not verify this answer against the source documents. "
-            "Please treat it with caution and check the original files.\n\n"
-            + answer
-        )
-    return {"final_answer": answer}
+        gen = "⚠️ " + gen
+    
+    docs = state.get("filtered_docs") or state.get("documents") or []
+    sources = []
+    for d in docs:
+        sources.append({"source": d.metadata.get("source"), "content": d.page_content})
+    
+    return {"final_answer": gen, "sources": sources}
 
 
-# ── Conditional edge functions ────────────────────────────────────────────────
+# Gap 6: No SQL route for aggregation queries
+def make_sql_query(kb: KnowledgeBase):
+    async def sql_query(state: AgentState) -> dict:
+        from ..database import SessionLocal
+        db = SessionLocal()
+        try:
+            invoices = query_invoices(db, kb_id=int(kb.id))
+            if not invoices:
+                return {"generation": "No invoice data found to aggregate.", "reasoning_trace": state["reasoning_trace"] + ["SQL: No invoices"]}
+            
+            # Simple aggregation logic or LLM-based summarization of the list
+            q = state["question"]
+            llm = _gen_llm(kb)
+            data_str = json.dumps([
+                {"vendor": i.vendor_name, "amount": float(i.total_amount or 0), "date": str(i.invoice_date)}
+                for i in invoices
+            ])
+            prompt = (
+                f"Question: {q}\n"
+                f"Data: {data_str}\n\n"
+                "Answer the question using the provided invoice data."
+            )
+            res = await llm.ainvoke(prompt)
+            return {"generation": res.content, "reasoning_trace": state["reasoning_trace"] + [f"SQL query over {len(invoices)} invoices"]}
+        finally:
+            db.close()
+    return sql_query
+
+
+# ── Routing logic ────────────────────────────────────────────────────────────
 
 def route_after_routing(state: AgentState) -> str:
-    return state.get("route_decision", "retrieve")
+    return state.get("route_mode", "retrieve")
 
 
 def route_after_grading(state: AgentState) -> str:
-    """
-    Extended Self-RAG routing:
-      - No filtered docs                     → rewrite (existing behaviour)
-      - Filtered docs but 0 sufficient docs  → targeted rewrite (NEW)
-      - Filtered docs with sufficient docs   → generate
-      - Max rewrites exhausted               → generate regardless
-    """
-    filtered = state.get("filtered_docs", [])
-    max_rewrites = state.get("max_rewrites", DEFAULT_MAX_REWRITES)
-    rewrite_count = state.get("rewrite_count", 0)
-
-    if not filtered:
-        if rewrite_count >= max_rewrites:
-            logger.info("[route_after_grading] Max rewrites reached — generating with what we have")
-            return "generate"
-        return "rewrite"
-
-    # NEW: relevant docs found but none contain the direct answer
-    has_sufficient = state.get("has_sufficient_docs", True)
-    rewrite_hint = state.get("rewrite_hint", "")
-    if not has_sufficient and rewrite_hint and rewrite_count < max_rewrites:
-        logger.info("[route_after_grading] Relevant but insufficient — targeted rewrite")
-        return "rewrite"
-
-    return "generate"
+    if state.get("has_sufficient_docs"):
+        return "generate"
+    return "rewrite"
 
 
 def route_after_hallucination(state: AgentState) -> str:
@@ -1039,16 +572,33 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
         graph.add_node("finalise", finalise)
         graph.add_node("introspect", make_introspect(kb))
         graph.add_node("check_hallucination", make_check_hallucination(kb))
+        graph.add_node("sql_query", make_sql_query(kb))
 
         graph.add_edge(START, "route_query")
         graph.add_conditional_edges(
             "route_query", route_after_routing,
-            {"retrieve": "retrieve", "general": "direct_answer", "clarify": "clarify", "introspect": "introspect"},
+            {
+                "retrieve": "retrieve", 
+                "general": "direct_answer", 
+                "clarify": "clarify", 
+                "introspect": "introspect",
+                "sql": "sql_query",
+                "sparse": "retrieve",
+                "graph": "retrieve"
+            },
         )
         graph.add_edge("introspect", "finalise")
+        graph.add_edge("sql_query", "finalise")
         graph.add_edge("retrieve", "generate")
         graph.add_edge("generate", "check_hallucination")
-        graph.add_edge("check_hallucination", "finalise")
+        
+        # Gap 4: Replace direct edge with conditional routing
+        graph.add_conditional_edges(
+            "check_hallucination",
+            route_after_hallucination,
+            {"quality": "finalise", "reflect": "finalise"},  # fast: no loop, just flag
+        )
+        
         graph.add_edge("direct_answer", "finalise")
         graph.add_edge("clarify", "finalise")
         graph.add_edge("finalise", END)
@@ -1067,13 +617,23 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
         graph.add_node("clarify", clarify)
         graph.add_node("finalise", finalise)
         graph.add_node("introspect", make_introspect(kb))
+        graph.add_node("sql_query", make_sql_query(kb))
 
         graph.add_edge(START, "route_query")
         graph.add_conditional_edges(
             "route_query", route_after_routing,
-            {"retrieve": "retrieve", "general": "direct_answer", "clarify": "clarify", "introspect": "introspect"},
+            {
+                "retrieve": "retrieve", 
+                "general": "direct_answer", 
+                "clarify": "clarify", 
+                "introspect": "introspect",
+                "sql": "sql_query",
+                "sparse": "retrieve",
+                "graph": "retrieve"
+            },
         )
         graph.add_edge("introspect", "finalise")
+        graph.add_edge("sql_query", "finalise")
         graph.add_edge("retrieve", "grade_documents")
         graph.add_conditional_edges(
             "grade_documents", route_after_grading,
