@@ -15,8 +15,8 @@ class AgentState(TypedDict):
     fast_mode:      bool                       # per-request fast mode flag
 
     # ── Routing ───────────────────────────────────────────────────────────────
-    route_decision: str                        # "retrieve" | "general" | "clarify"
-    route_mode: str                            # "retrieve" | "sparse" | "graph"
+    route_decision: str                        # "retrieve" | "graph" | "sql" | "introspect" | "general" | "clarify"
+    route_mode: str                            # "retrieve" | "sparse" | "graph" | "sql" | "introspect"
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
     documents:      List[Any]                  # retrieved LangChain Documents

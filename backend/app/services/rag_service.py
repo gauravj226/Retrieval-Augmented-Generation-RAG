@@ -14,6 +14,7 @@ from ..config import settings
 from ..models.models import KnowledgeBase, Personality, Document as DBDocument, InvoiceMetadata
 from .document_processor import process_file
 from .bm25_index import HybridBM25Index
+from .entity_graph import extract_cross_references, extract_invoice_relationships
 from .graph_memory import GraphMemoryStore
 from .sota_retrieval import contextualize_documents
 from .vector_store_factory import get_vector_store
@@ -296,6 +297,16 @@ async def ingest_document(
                 )
                 db.add(invoice)
                 db.commit()
+                db.refresh(invoice)
+                try:
+                    extract_invoice_relationships(
+                        kb_id=int(kb.id),
+                        source_doc=original_filename,
+                        invoice=invoice,
+                        db=db,
+                    )
+                except Exception as ge:
+                    logger.warning("Invoice relationship extraction failed: %s", ge)
                 logger.info(f"[ingest] Saved invoice metadata for {original_filename}")
             finally:
                 db.close()
@@ -333,6 +344,25 @@ async def ingest_document(
     if settings.ENABLE_CONTEXTUAL_RETRIEVAL:
         chunks = contextualize_documents(chunks)
 
+    kb_id = getattr(kb, "id", None)
+    if kb_id is not None:
+        try:
+            from ..database import SessionLocal
+            graph_text = " ".join((c.metadata.get("raw") or c.page_content or "") for c in chunks[:25])
+            if graph_text.strip():
+                db = SessionLocal()
+                try:
+                    extract_cross_references(
+                        filename=original_filename,
+                        content=graph_text,
+                        kb_id=int(kb_id),
+                        db=db,
+                    )
+                finally:
+                    db.close()
+        except Exception as ge:
+            logger.warning("Cross-reference extraction failed: %s", ge)
+
     vectorstore = get_vector_store(
         kb=kb,
         embedding_function=get_embeddings(kb.embedding_model),
@@ -344,7 +374,6 @@ async def ingest_document(
     # ChromaDB stores both retrieval returns summary+metadata together
     vectorstore.add_documents(chunks)
 
-    kb_id = getattr(kb, "id", None)
     if kb_id is not None:
         HybridBM25Index(settings.HYBRID_BM25_DIR).upsert_chunks(kb_id=int(kb_id), docs=chunks)
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 System 2 Agentic RAG using LangGraph + llama3.2:3b via Ollama.
 
 Graph nodes (all pure functions: AgentState -> dict):
@@ -37,13 +37,15 @@ from langchain.schema import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 import torch
 
 from ..config import settings
-from ..models.models import KnowledgeBase, Personality, InvoiceMetadata
+from ..models.models import EntityRelationship, InvoiceMetadata, KnowledgeBase, Personality
 from .agent_state import AgentState
 from .rag_service import get_chroma_client, get_embeddings, query_invoices
+from .entity_graph import match_entities_for_query
 from .graph_memory import GraphMemoryStore
 from .long_term_memory import LongTermMemoryStore
 from .semantic_cache import SemanticAnswerCache
@@ -69,7 +71,7 @@ DEFAULT_MAX_REWRITES = 2
 DEFAULT_MAX_RETRIES = 2
 
 
-# ── Utility helpers ───────────────────────────────────────────────────────────
+# ---- Utility helpers ----------------------------------------------------------------------------------------------------------------------
 
 def _normalise_query(text: str) -> str:
     return " ".join((text or "").lower().split())
@@ -97,7 +99,7 @@ def _cache_key(
     return f"{kb.id}:{mode}:{scope}:{_normalise_query(question)}:{_history_tail_hash(chat_history)}"
 
 
-# ── LLM helpers ───────────────────────────────────────────────────────────────
+# ---- LLM helpers ------------------------------------------------------------------------------------------------------------------------------
 
 def _llm(
     kb: KnowledgeBase,
@@ -136,11 +138,11 @@ def _parse_binary(text: str, positive: str, negative: str) -> str:
             return negative
     if positive in joined:
         return positive
-    logger.warning("[_parse_binary] Unexpected: '%s' — defaulting to %s", text[:60], negative)
+    logger.warning("[_parse_binary] Unexpected: '%s' - defaulting to %s", text[:60], negative)
     return negative
 
 
-# ── Query helpers ─────────────────────────────────────────────────────────────
+# ---- Query helpers --------------------------------------------------------------------------------------------------------------------------
 
 def _expand_query(query: str) -> List[str]:
     q, ql, expanded = query.strip(), query.strip().lower(), [query.strip()]
@@ -198,7 +200,7 @@ def _rewrite_is_compatible(original: str, rewritten: str) -> bool:
     return len(o_terms.intersection(r_terms)) / max(1, len(o_terms)) >= 0.5
 
 
-# ── Entity helpers ────────────────────────────────────────────────────────────
+# ---- Entity helpers ------------------------------------------------------------------------------------------------------------------------
 
 def _extract_focus_entities(text: str) -> dict:
     raw, lower = text or "", (text or "").lower()
@@ -255,7 +257,7 @@ def _keyword_rerank(docs: List[Document], query: str, keep: int) -> List[Documen
     return [d for _, d in scored[:keep]]
 
 
-# ── Retrieval helpers ─────────────────────────────────────────────────────────
+# ---- Retrieval helpers ------------------------------------------------------------------------------------------------------------------
 
 def _lexical_candidates(kb: KnowledgeBase, query: str, limit: int) -> List[Document]:
     terms = re.findall(r"[a-zA-Z0-9]{3,}", query.lower())
@@ -265,15 +267,8 @@ def _lexical_candidates(kb: KnowledgeBase, query: str, limit: int) -> List[Docum
         indexed = HybridBM25Index(settings.HYBRID_BM25_DIR).search(
             kb_id=int(kb.id), query=query, top_k=max(1, int(limit))
         )
-        if not indexed:
-            return []
-        docs = []
-        for hit in indexed:
-            docs.append(Document(
-                page_content=hit.content,
-                metadata={**hit.metadata, "lexical_score": hit.score}
-            ))
-        return docs
+        if indexed:
+            return indexed
     except Exception as e:
         logger.warning("bm25 index retrieval failed; falling back to chroma scan: %s", e)
 
@@ -340,7 +335,7 @@ def _cross_encoder_rerank(query: str, docs: List[Document], keep: int) -> List[D
         return docs[:keep]
 
 
-# ── Nodes ─────────────────────────────────────────────────────────────────────
+# ---- Nodes ------------------------------------------------------------------------------------------------------------------------------------------
 
 def make_introspect(kb: KnowledgeBase):
     llm = _gen_llm(kb)
@@ -370,13 +365,231 @@ def make_introspect(kb: KnowledgeBase):
     return introspect
 
 
-# Node 1 — route_query
+def make_sql_answer(kb: KnowledgeBase, db: Session):
+    async def sql_answer(state: AgentState) -> dict:
+        question = state["question"]
+        q = (question or "").lower()
+        rows = query_invoices(db, kb_id=int(kb.id))
+
+        if not rows:
+            answer = "No invoice metadata is available for this knowledge base yet."
+            return {
+                "generation": answer,
+                "final_answer": answer,
+                "sources": [],
+                "reasoning_trace": ["SQL route: no invoice metadata found"],
+            }
+
+        def _to_float(v):
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        count = len(rows)
+        total = sum(_to_float(getattr(r, "total_amount", 0)) for r in rows)
+        avg = (total / count) if count else 0.0
+
+        if "how many" in q or "count" in q or "total number" in q:
+            answer = f"I found **{count}** invoice record{'s' if count != 1 else ''}."
+        elif "average" in q or "avg" in q:
+            answer = f"The average invoice amount is approximately **{avg:,.2f}**."
+        elif "sum" in q or "total amount" in q:
+            answer = f"The total invoice amount is **{total:,.2f}** across **{count}** invoice records."
+        else:
+            top = sorted(
+                rows,
+                key=lambda r: _to_float(getattr(r, "total_amount", 0)),
+                reverse=True,
+            )[:5]
+            lines = []
+            for r in top:
+                vendor = getattr(r, "vendor_name", None) or "Unknown vendor"
+                inv = getattr(r, "invoice_number", None) or "N/A"
+                amt = _to_float(getattr(r, "total_amount", 0))
+                lines.append(f"- {vendor} · Invoice {inv} · {amt:,.2f}")
+            answer = (
+                f"I found **{count}** invoice record{'s' if count != 1 else ''}.\n\n"
+                "Top records:\n"
+                + "\n".join(lines)
+            )
+
+        return {
+            "generation": answer,
+            "final_answer": answer,
+            "sources": [],
+            "reasoning_trace": [f"SQL route: answered from {count} invoice rows"],
+        }
+
+    return sql_answer
+
+
+def make_graph_query(kb: KnowledgeBase, db: Session):
+    vectorstore = get_vector_store(
+        kb=kb,
+        embedding_function=get_embeddings(kb.embedding_model),
+        chroma_client=get_chroma_client(),
+    )
+
+    async def graph_query(state: AgentState) -> dict:
+        question = state.get("rewritten_query") or state["question"]
+        entities = list(match_entities_for_query(question))
+        query_entities = _extract_focus_entities(question)
+        top_k = int(getattr(kb, "top_k_docs", 4) or 4)
+        keep = max(top_k * 2, 6)
+
+        if not entities:
+            return {
+                "route_mode": "retrieve",
+                "reasoning_trace": ["Graph route fallback: no focus entities found."],
+            }
+
+        try:
+            clauses = []
+            for entity in entities[:16]:
+                like = f"%{entity}%"
+                clauses.extend(
+                    [
+                        EntityRelationship.source_entity.ilike(like),
+                        EntityRelationship.target_entity.ilike(like),
+                        EntityRelationship.source_doc.ilike(like),
+                        EntityRelationship.target_doc.ilike(like),
+                    ]
+                )
+            direct = (
+                db.query(EntityRelationship)
+                .filter(EntityRelationship.kb_id == int(kb.id), or_(*clauses))
+                .order_by(EntityRelationship.confidence.desc())
+                .limit(80)
+                .all()
+            )
+        except Exception as e:
+            logger.warning("graph query fallback to retrieve path: %s", e)
+            return {
+                "route_mode": "retrieve",
+                "reasoning_trace": ["Graph route fallback: relationship lookup failed."],
+            }
+
+        if not direct:
+            return {
+                "route_mode": "retrieve",
+                "reasoning_trace": ["Graph route fallback: no linked entities found."],
+            }
+
+        linked_entities = set()
+        connected_docs = set()
+        for rel in direct:
+            if rel.source_entity:
+                linked_entities.add(str(rel.source_entity))
+            if rel.target_entity:
+                linked_entities.add(str(rel.target_entity))
+            if rel.source_doc:
+                connected_docs.add(str(rel.source_doc))
+            if rel.target_doc:
+                connected_docs.add(str(rel.target_doc))
+
+        if linked_entities:
+            extra_clauses = []
+            for entity in list(linked_entities)[:24]:
+                like = f"%{entity}%"
+                extra_clauses.extend(
+                    [
+                        EntityRelationship.source_entity.ilike(like),
+                        EntityRelationship.target_entity.ilike(like),
+                    ]
+                )
+            if extra_clauses:
+                one_hop = (
+                    db.query(EntityRelationship)
+                    .filter(EntityRelationship.kb_id == int(kb.id), or_(*extra_clauses))
+                    .order_by(EntityRelationship.confidence.desc())
+                    .limit(80)
+                    .all()
+                )
+                for rel in one_hop:
+                    if rel.source_doc:
+                        connected_docs.add(str(rel.source_doc))
+                    if rel.target_doc:
+                        connected_docs.add(str(rel.target_doc))
+
+        docs: List[Document] = []
+        seen = set()
+        for doc_name in list(connected_docs)[:20]:
+            try:
+                hits = vectorstore.similarity_search(
+                    question,
+                    k=max(top_k, 6),
+                    filter={"source": doc_name},
+                )
+            except Exception:
+                hits = vectorstore.similarity_search(question, k=max(top_k, 6))
+            for doc in hits:
+                key = (str(doc.metadata.get("source", "")), doc.page_content[:220])
+                if key in seen:
+                    continue
+                seen.add(key)
+                docs.append(doc)
+
+        if not docs:
+            return {
+                "route_mode": "retrieve",
+                "reasoning_trace": ["Graph route fallback: linked docs had no retrievable chunks."],
+            }
+
+        reranked = _keyword_rerank(docs, question, keep=keep)
+        if settings.ENABLE_CROSS_ENCODER_RERANK and not bool(state.get("fast_mode")):
+            reranked = _cross_encoder_rerank(question, reranked, keep=keep)
+
+        entity_match_count = 0
+        top_keyword_score = 0.0
+        for doc in reranked[:5]:
+            try:
+                top_keyword_score = max(top_keyword_score, float(doc.metadata.get("retrieval_score") or 0.0))
+            except Exception:
+                pass
+            src = str(doc.metadata.get("source", "")).lower()
+            raw = str(doc.metadata.get("raw", "")).lower()
+            txt = str(getattr(doc, "page_content", "")).lower()
+            d_entities = _extract_focus_entities(f"{src}\n{raw}\n{txt}")
+            if _entity_alignment_score(query_entities, d_entities, src) > 0:
+                entity_match_count += 1
+
+        if not reranked:
+            confidence, conf_reason = "low", "no_graph_docs"
+        elif query_entities and entity_match_count == 0:
+            confidence, conf_reason = "low", "no_exact_entity_match"
+        elif top_keyword_score < 10:
+            confidence, conf_reason = "low", "low_graph_rerank_score"
+        elif top_keyword_score < 18:
+            confidence, conf_reason = "medium", "moderate_graph_rerank_score"
+        else:
+            confidence, conf_reason = "high", "strong_graph_match"
+
+        return {
+            "documents": reranked,
+            "retrieval_confidence": confidence,
+            "retrieval_score": float(top_keyword_score),
+            "reasoning_trace": [
+                f"Graph traversal: {len(entities)} entities -> {len(connected_docs)} linked docs",
+                f"Retrieved {len(reranked)} graph docs for: *{question[:60]}*",
+                f"Retrieval confidence: **{confidence}** ({conf_reason}, score={top_keyword_score:.1f})",
+            ],
+        }
+
+    return graph_query
+
+
+# Node 1 - route_query
 def make_route_query(kb: KnowledgeBase):
     async def route_query(state: AgentState) -> dict:
         question = state["question"]
         mode_hint = route_mode_for_query(question)
         if mode_hint == "introspect":
             return {"route_decision": "introspect", "route_mode": "introspect", "reasoning_trace": ["Route: introspect"]}
+        if mode_hint == "sql":
+            return {"route_decision": "sql", "route_mode": "sql", "reasoning_trace": ["Route: sql"]}
+        if mode_hint == "graph" and not bool(state.get("fast_mode")):
+            return {"route_decision": "graph", "route_mode": "graph", "reasoning_trace": ["Route: graph"]}
         if bool(state.get("fast_mode")):
             q = question.strip().lower()
             if q in {"hi", "hello", "hey", "thanks", "thank you"}:
@@ -413,7 +626,7 @@ Question: {question}"""
     return route_query
 
 
-# Node 2 — retrieve
+# Node 2 - retrieve
 def make_retrieve(kb: KnowledgeBase):
     vectorstore = get_vector_store(
         kb=kb,
@@ -522,12 +735,12 @@ def make_retrieve(kb: KnowledgeBase):
     return retrieve
 
 
-# Node 3 — grade_documents  (Self-RAG Stage 1: Relevance + Stage 2: Sufficiency)
+# Node 3 - grade_documents  (Self-RAG Stage 1: Relevance + Stage 2: Sufficiency)
 def make_grade_documents(kb: KnowledgeBase):
     """
     Self-RAG grading with two stages:
-      Stage 1 — Relevance:   Is this chunk about the same topic as the query?   (ISREL)
-      Stage 2 — Sufficiency: Can I extract the direct answer from this chunk?   (ISSUP)
+      Stage 1 - Relevance:   Is this chunk about the same topic as the query?   (ISREL)
+      Stage 2 - Sufficiency: Can I extract the direct answer from this chunk?   (ISSUP)
     Docs are classified into: sufficient → partial → insufficient (dropped from preferred set).
     A rewrite_hint is generated when relevant docs exist but none are sufficient, so
     route_after_grading can trigger a targeted rewrite even when docs pass relevance.
@@ -544,9 +757,9 @@ def make_grade_documents(kb: KnowledgeBase):
         heuristic_kept = 0
 
         for doc in documents:
-            # ── Stage 1: Relevance ────────────────────────────────────────────
+            # ---- Stage 1: Relevance ----------------------------------------------------------------------------------------
             relevance_prompt = f"""Grade whether this document is relevant to the question.
-Department context: {kb.department} — {kb.description or 'General knowledge-base operations'}
+Department context: {kb.department} - {kb.description or 'General knowledge-base operations'}
 Question: {question}
 Source filename: {doc.metadata.get("source", "unknown")}
 Document excerpt: {doc.page_content[:1200]}
@@ -575,16 +788,16 @@ Reply ONLY: yes or no"""
                 if grade != "yes" and heuristic_score >= heuristic_threshold:
                     heuristic_kept += 1
 
-            # ── Stage 2: Sufficiency (ISSUP) — only for LLM-relevant docs ────
+            # ---- Stage 2: Sufficiency (ISSUP) - only for LLM-relevant docs --------
             if grade == "yes":
                 suf_prompt = f"""Given this document chunk, can you extract a direct answer to the question?
 Question: {question}
 Chunk: {(doc.metadata.get("raw") or doc.page_content)[:1200]}
 
 Reply ONLY one word:
-- "sufficient"   — chunk contains a direct, complete answer
-- "partial"      — chunk is relevant but only partially answers the question
-- "insufficient" — chunk is relevant in topic but does not contain the actual answer
+- "sufficient"   - chunk contains a direct, complete answer
+- "partial"      - chunk is relevant but only partially answers the question
+- "insufficient" - chunk is relevant in topic but does not contain the actual answer
 
 Reply:"""
                 suf_result = await llm.ainvoke([HumanMessage(content=suf_prompt)])
@@ -606,7 +819,7 @@ Reply:"""
                     partial_docs.append(doc)
                 # "insufficient": stays in filtered (for grounding) but not preferred
 
-        # ── Fallback: LLM over-strict but retrieval found plausible docs ─────
+        # ---- Fallback: LLM over-strict but retrieval found plausible docs ----------
         if not filtered and documents:
             retrieval_conf = str(state.get("retrieval_confidence") or "").lower()
             try:
@@ -626,7 +839,7 @@ Reply:"""
         rewrite_hint = ""
         if filtered and not has_sufficient and partial_docs:
             rewrite_hint = (
-                "previous results were relevant but did not contain the direct answer — "
+                "previous results were relevant but did not contain the direct answer - "
                 "search more specifically for the exact detail"
             )
 
@@ -652,7 +865,7 @@ Reply:"""
     return grade_documents
 
 
-# Node 4 — rewrite_query
+# Node 4 - rewrite_query
 def make_rewrite_query(kb: KnowledgeBase):
     llm = _grade_llm(kb)
 
@@ -696,7 +909,7 @@ Rewritten (reply with ONLY the rewritten question):"""
     return rewrite_query
 
 
-# Node 5 — generate
+# Node 5 - generate
 def make_generate(kb: KnowledgeBase):
     async def generate(state: AgentState) -> dict:
         question = state["question"]
@@ -750,11 +963,11 @@ def make_generate(kb: KnowledgeBase):
             history_str = f"\n\nConversation history:\n{history_str}"
 
         reflection_hint = (
-            f"\n\nPrevious answer rejected — reason:\n{reflection}\nFix this."
+            f"\n\nPrevious answer rejected - reason:\n{reflection}\nFix this."
             if reflection else ""
         )
 
-        # ── Sufficiency hint injected into generation prompt ─────────────────
+        # ---- Sufficiency hint injected into generation prompt ----------------------------------
         sufficiency_note = ""
         if not has_sufficient and docs:
             sufficiency_note = (
@@ -791,7 +1004,7 @@ def make_generate(kb: KnowledgeBase):
         generation = result.content.strip()
 
         if retrieval_confidence == "low":
-            caution = "I found loosely related documents — please verify with the cited sources."
+            caution = "I found loosely related documents - please verify with the cited sources."
             if caution.lower() not in generation.lower():
                 generation = f"{caution}\n\n{generation}"
 
@@ -824,7 +1037,7 @@ def make_generate(kb: KnowledgeBase):
     return generate
 
 
-# Node 6 — check_hallucination
+# Node 6 - check_hallucination
 def make_check_hallucination(kb: KnowledgeBase):
     llm = _grade_llm(kb)
 
@@ -855,30 +1068,39 @@ Reply ONLY: grounded or hallucinating"""
     return check_hallucination
 
 
-# Node 7 — check_answer_quality
+# Node 7 - check_answer_quality
 def make_check_answer_quality(kb: KnowledgeBase):
-    def check_answer_quality(state: AgentState) -> dict:
+    llm = _grade_llm(kb)
+
+    async def check_answer_quality(state: AgentState) -> dict:
         q = state["question"]
         gen = state["generation"]
-        llm = _grade_llm(kb)
-        
+        docs = state.get("filtered_docs") or state.get("documents", [])
+
+        context_parts = []
+        for d in docs[:4]:
+            raw = str(d.metadata.get("raw", "")).strip()
+            context_parts.append((raw if raw else d.page_content)[:800])
+        ctx = "\n\n".join(context_parts) if context_parts else "No source snippets."
+
         prompt = (
             f"Does this answer fully address the question using the provided sources?\n"
-            f"Department: {kb.department}\nQuestion: {question}\n"
-            f"Sources:\n{_sp}\nAnswer: {generation}\n\n"
+            f"Department: {kb.department}\nQuestion: {q}\n"
+            f"Sources:\n{ctx}\nAnswer: {gen}\n\n"
             f"Reply ONLY: useful or not_useful"
         )
         result = await llm.ainvoke([HumanMessage(content=prompt)])
         quality = _parse_binary(result.content, "useful", "not_useful")
-        logger.info(f"[check_answer_quality] → {quality}")
+        logger.info(f"[check_answer_quality] -> {quality}")
         return {
             "answer_quality": quality,
             "reasoning_trace": [f"{'✅' if quality == 'useful' else '🔄'} Quality: **{quality}**"],
         }
+
     return check_answer_quality
 
 
-# Node 8 — reflect
+# Node 8 - reflect
 def make_reflect(kb: KnowledgeBase):
     llm = _grade_llm(kb)
 
@@ -910,7 +1132,7 @@ In 1-2 sentences, what was wrong and how should the approach change?"""
     return reflect
 
 
-# Node 9 — direct_answer
+# Node 9 - direct_answer
 def make_direct_answer(kb: KnowledgeBase):
     llm = _gen_llm(kb)
 
@@ -938,7 +1160,7 @@ def make_direct_answer(kb: KnowledgeBase):
     return direct_answer
 
 
-# Node 10 — clarify
+# Node 10 - clarify
 def clarify(state: AgentState) -> dict:
     question = state["question"]
     clarification = (
@@ -955,7 +1177,7 @@ def clarify(state: AgentState) -> dict:
     }
 
 
-# Node 11 — finalise
+# Node 11 - finalise
 def finalise(state: AgentState) -> dict:
     answer = state.get("final_answer") or state.get("generation") or "I was unable to generate an answer."
     if state.get("hallucination_check") == "hallucinating":
@@ -967,7 +1189,7 @@ def finalise(state: AgentState) -> dict:
     return {"final_answer": answer}
 
 
-# ── Conditional edge functions ────────────────────────────────────────────────
+# ---- Conditional edge functions ------------------------------------------------------------------------------------------------
 
 def route_after_routing(state: AgentState) -> str:
     return state.get("route_decision", "retrieve")
@@ -987,7 +1209,7 @@ def route_after_grading(state: AgentState) -> str:
 
     if not filtered:
         if rewrite_count >= max_rewrites:
-            logger.info("[route_after_grading] Max rewrites reached — generating with what we have")
+            logger.info("[route_after_grading] Max rewrites reached - generating with what we have")
             return "generate"
         return "rewrite"
 
@@ -995,7 +1217,7 @@ def route_after_grading(state: AgentState) -> str:
     has_sufficient = state.get("has_sufficient_docs", True)
     rewrite_hint = state.get("rewrite_hint", "")
     if not has_sufficient and rewrite_hint and rewrite_count < max_rewrites:
-        logger.info("[route_after_grading] Relevant but insufficient — targeted rewrite")
+        logger.info("[route_after_grading] Relevant but insufficient - targeted rewrite")
         return "rewrite"
 
     return "generate"
@@ -1026,36 +1248,53 @@ def route_after_reflect(state: AgentState) -> str:
     return "rewrite"
 
 
-# ── Graph builder ─────────────────────────────────────────────────────────────
+# ---- Graph builder --------------------------------------------------------------------------------------------------------------------------
 
 def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = False) -> StateGraph:
     from .rag_service import resolve_system_prompt
-    resolve_system_prompt(kb, db)  # pre-warm — result stored in initial_state by caller
+    resolve_system_prompt(kb, db)  # pre-warm - result stored in initial_state by caller
 
     graph = StateGraph(AgentState)
 
     if fast_mode:
         graph.add_node("route_query",         make_route_query(kb))
         graph.add_node("retrieve",            make_retrieve(kb))
+        graph.add_node("graph_query",         make_graph_query(kb, db))
         graph.add_node("generate",            make_generate(kb))
         graph.add_node("check_hallucination", make_check_hallucination(kb))
+        graph.add_node("direct_answer",       make_direct_answer(kb))
+        graph.add_node("clarify",             clarify)
+        graph.add_node("introspect",          make_introspect(kb))
+        graph.add_node("sql_answer",          make_sql_answer(kb, db))
+        graph.add_node("finalise",            finalise)
 
         graph.add_edge(START, "route_query")
         graph.add_conditional_edges(
             "route_query", route_after_routing,
-            {"retrieve": "retrieve", "general": "direct_answer", "clarify": "clarify", "introspect": "introspect"},
+            {
+                "retrieve": "retrieve",
+                "graph": "graph_query",
+                "general": "direct_answer",
+                "clarify": "clarify",
+                "introspect": "introspect",
+                "sql": "sql_answer",
+            },
         )
         graph.add_edge("introspect", "finalise")
+        graph.add_edge("sql_answer", "finalise")
+        graph.add_edge("graph_query", "generate")
         graph.add_edge("retrieve", "generate")
         graph.add_edge("generate", "check_hallucination")
         graph.add_edge("check_hallucination", "finalise")
         graph.add_edge("direct_answer", "finalise")
         graph.add_edge("clarify",       "finalise")
         graph.add_edge("finalise",      END)
+        return graph.compile()
 
     else:
         graph.add_node("route_query",          make_route_query(kb))
         graph.add_node("retrieve",             make_retrieve(kb))
+        graph.add_node("graph_query",          make_graph_query(kb, db))
         graph.add_node("grade_documents",      make_grade_documents(kb))
         graph.add_node("rewrite_query",        make_rewrite_query(kb))
         graph.add_node("generate",             make_generate(kb))
@@ -1066,13 +1305,23 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
         graph.add_node("clarify", clarify)
         graph.add_node("finalise", finalise)
         graph.add_node("introspect", make_introspect(kb))
+        graph.add_node("sql_answer", make_sql_answer(kb, db))
 
         graph.add_edge(START, "route_query")
         graph.add_conditional_edges(
             "route_query", route_after_routing,
-            {"retrieve": "retrieve", "general": "direct_answer", "clarify": "clarify", "introspect": "introspect"},
+            {
+                "retrieve": "retrieve",
+                "graph": "graph_query",
+                "general": "direct_answer",
+                "clarify": "clarify",
+                "introspect": "introspect",
+                "sql": "sql_answer",
+            },
         )
         graph.add_edge("introspect", "finalise")
+        graph.add_edge("sql_answer", "finalise")
+        graph.add_edge("graph_query", "grade_documents")
         graph.add_edge("retrieve", "grade_documents")
         graph.add_conditional_edges(
             "grade_documents", route_after_grading,
@@ -1098,7 +1347,7 @@ def build_agentic_rag_graph(kb: KnowledgeBase, db: Session, fast_mode: bool = Fa
         return graph.compile()
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+# ---- Public interface --------------------------------------------------------------------------------------------------------------------
 
 async def run_agentic_rag(
     kb: KnowledgeBase,
@@ -1217,7 +1466,7 @@ async def run_agentic_rag(
                 _query_cache.pop(oldest_key, None)
 
         if settings.ENABLE_SEMANTIC_CACHE:
-            _semantic_cache.set(
+            _semantic_cache.put(
                 query=question,
                 kb_id=kb.id,
                 mode="fast" if effective_fast_mode else "quality",
