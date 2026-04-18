@@ -16,6 +16,7 @@ from ..schemas.schemas import (
 from ..services.agentic_rag import run_agentic_rag
 from ..services.audit import audit_event
 from ..services.long_term_memory import LongTermMemoryStore
+from ..services.kb_manifest import load_manifest
 from ..config import settings
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -207,6 +208,47 @@ async def send_message(
         "reasoning_trace": trace,
         "ui_payload":      ui_payload,
         "session_id":      session.id,
+    }
+
+
+@router.get("/kb-topics/{kb_id}")
+async def get_kb_topics(
+    kb_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    require_kb_access(current_user, kb_id, "read", db)
+    kb = db.query(KnowledgeBase).filter(
+        KnowledgeBase.id == kb_id,
+        KnowledgeBase.is_active == True,
+    ).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found or inactive")
+
+    manifest = load_manifest(int(kb_id))
+    topics: list[str] = []
+    seen = set()
+
+    for entry in (manifest or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        display_name = str(entry.get("display_name", "")).strip()
+        if display_name and display_name.lower() not in seen:
+            topics.append(display_name)
+            seen.add(display_name.lower())
+        for heading in entry.get("headings", [])[:6]:
+            h = str(heading).strip()
+            if h and h.lower() not in seen:
+                topics.append(h)
+                seen.add(h.lower())
+        if len(topics) >= 40:
+            break
+
+    return {
+        "kb_id": kb.id,
+        "kb_name": kb.name,
+        "topic_count": len(topics),
+        "topics": topics[:40],
     }
 
 
