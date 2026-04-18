@@ -1,10 +1,11 @@
-//  State 
+﻿//  State 
 const state = {
   kbs: [],
   sessions: [],
   currentKB: null,
   currentSession: null,
   isLoading: false,
+  kbTopicsCache: {},
 };
 
 const MAX_UPLOAD_FILES = 5;
@@ -66,7 +67,7 @@ function sanitize(html) {
     doc.querySelectorAll(tag).forEach(el => el.remove());
   });
 
-  // Strip event handler attributes (onclick, onerror, onload …)
+  // Strip event handler attributes (onclick, onerror, onload â€¦)
   doc.querySelectorAll('*').forEach(el => {
     [...el.attributes].forEach(attr => {
       if (/^on\w+/i.test(attr.name) ||
@@ -258,6 +259,81 @@ function initHelpModal() {
   });
 }
 
+
+function closeTopicsModal() {
+  document.getElementById('topics-modal')?.classList.add('hidden');
+}
+
+function renderKBTopics(payload) {
+  const listEl = document.getElementById('topics-list');
+  const kbNameEl = document.getElementById('topics-kb-name');
+  const countEl = document.getElementById('topics-count');
+  if (!listEl || !kbNameEl || !countEl) return;
+
+  kbNameEl.textContent = payload?.kb_name || state.currentKB?.name || 'Selected knowledge base';
+  const topics = Array.isArray(payload?.topics) ? payload.topics : [];
+  countEl.textContent = topics.length
+    ? `${topics.length} topic${topics.length > 1 ? 's' : ''} available`
+    : 'No topics found yet for this KB.';
+
+  if (!topics.length) {
+    listEl.innerHTML = '<p class="topics-empty">No manifest topics available yet. Upload or reindex documents to populate this list.</p>';
+    return;
+  }
+
+  listEl.innerHTML = topics
+    .map(topic => `<span class="topic-chip">${escapeHTML(topic)}</span>`)
+    .join('');
+}
+
+async function openTopicsModal() {
+  if (!state.currentKB) {
+    toast('Select a knowledge base first', 'error');
+    return;
+  }
+
+  const modal = document.getElementById('topics-modal');
+  const listEl = document.getElementById('topics-list');
+  const kbNameEl = document.getElementById('topics-kb-name');
+  const countEl = document.getElementById('topics-count');
+  if (!modal || !listEl || !kbNameEl || !countEl) return;
+
+  modal.classList.remove('hidden');
+  kbNameEl.textContent = state.currentKB.name;
+  countEl.textContent = 'Loading topics…';
+  listEl.innerHTML = '<p class="topics-empty">Loading…</p>';
+
+  const cacheKey = String(state.currentKB.id);
+  if (state.kbTopicsCache[cacheKey]) {
+    renderKBTopics(state.kbTopicsCache[cacheKey]);
+    return;
+  }
+
+  try {
+    const payload = await ChatAPI.getKBTopics(state.currentKB.id);
+    state.kbTopicsCache[cacheKey] = payload;
+    renderKBTopics(payload);
+  } catch (err) {
+    countEl.textContent = 'Unable to load topics';
+    listEl.innerHTML = `<p class="topics-empty">${escapeHTML(err.message || 'Failed to load topics')}</p>`;
+  }
+}
+
+function initTopicsModal() {
+  const btn = document.getElementById('topics-btn');
+  const modal = document.getElementById('topics-modal');
+  const closeBtn = document.getElementById('topics-close-btn');
+  const doneBtn = document.getElementById('topics-done-btn');
+  if (!btn || !modal || btn.dataset.bound === 'true') return;
+
+  btn.dataset.bound = 'true';
+  btn.addEventListener('click', openTopicsModal);
+  closeBtn?.addEventListener('click', closeTopicsModal);
+  doneBtn?.addEventListener('click', closeTopicsModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeTopicsModal();
+  });
+}
 function getFastModeEnabled() {
   return localStorage.getItem(FAST_MODE_STORAGE_KEY) === '1';
 }
@@ -374,7 +450,7 @@ function renderSessions() {
         </svg>
       </button>`;
 
-    // Click outer div → load session
+    // Click outer div â†’ load session
     item.addEventListener('click', (e) => {
       if (e.target.closest('.session-item-del')) return;
       loadSession(session);
@@ -509,7 +585,7 @@ async function refreshChatDocs() {
   if (!state.currentKB) return;
   const list    = document.getElementById('chat-docs-list');
   const current = Auth.user();
-  list.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;padding:8px 0">Loading…</p>';
+  list.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;padding:8px 0">Loadingâ€¦</p>';
 
   try {
     const docs = await ChatAPI.getDocuments(state.currentKB.id);
@@ -557,7 +633,7 @@ async function refreshChatDocs() {
            </button>`
         : `<span title="Uploaded by another user"
              style="flex-shrink:0;font-size:.72rem;color:var(--text-3);padding:0 6px;
-                    cursor:default;user-select:none">��</span>`;
+                    cursor:default;user-select:none">”’</span>`;
 
       const ownerNote = !isOwner
         ? `&middot; <span style="color:var(--text-3);font-style:italic">another user</span>`
@@ -592,7 +668,7 @@ async function refreshChatDocs() {
   } catch (err) {
     list.innerHTML = `
       <p style="color:var(--danger);font-size:.82rem;padding:8px 0">
-        ⚠️ ${escapeHTML(err.message)}
+        âš ï¸ ${escapeHTML(err.message)}
       </p>`;
   }
 }
@@ -672,7 +748,7 @@ async function handleChatUpload(fileList) {
   zone.innerHTML = `
     <div class="spinner" style="margin:0 auto;display:block"></div>
     <p style="margin-top:10px;color:var(--text-2);font-size:.875rem">
-      Uploading &amp; queuing "${escapeHTML(label)}"…
+      Uploading &amp; queuing "${escapeHTML(label)}"â€¦
     </p>
     <span>OCR will run automatically on images and scanned PDFs</span>`;
 
@@ -762,7 +838,7 @@ async function sendMessage() {
 
   } catch (err) {
     document.getElementById(typingId)?.remove();
-    appendMessage('assistant', `⚠️ ${err.message}`);
+    appendMessage('assistant', `âš ï¸ ${err.message}`);
     toast(err.message, 'error');
   } finally {
     state.isLoading = false;
@@ -810,12 +886,12 @@ function appendMessage(role, content, sources = [], trace = [], uiPayload = null
   //  Sources 
   const pipelineLabel = {
   docling:  { text: 'Docling',  color: '#6366f1' },
-  vlm:      { text: '�� VLM',      color: '#f59e0b' },
+  vlm:      { text: '‘ VLM',      color: '#f59e0b' },
   standard: { text: 'Text',     color: '#10b981' },
 };
 
 const sourcesHTML = (sources && sources.length)
-  ? `<button class="sources-toggle" onclick="toggleSources(this)">…${sources.length} source${sources.length > 1 ? 's' : ''}</button>
+  ? `<button class="sources-toggle" onclick="toggleSources(this)">â€¦${sources.length} source${sources.length > 1 ? 's' : ''}</button>
      <div class="sources-list hidden">
       ${sources.map(s => {
         const pl = pipelineLabel[s.pipeline] || pipelineLabel.standard;
@@ -823,7 +899,7 @@ const sourcesHTML = (sources && sources.length)
           <div class="source-chip">
             <div class="source-chip-name">
               ${escapeHTML(s.source || 'Source')}
-              ${s.page ? `<span style="color:var(--text-3)"> · p.${escapeHTML(s.page)}</span>` : ''}
+              ${s.page ? `<span style="color:var(--text-3)"> Â· p.${escapeHTML(s.page)}</span>` : ''}
               <span style="font-size:.68rem;padding:1px 6px;border-radius:4px;
                            background:${pl.color}22;color:${pl.color};margin-left:4px">
                 ${pl.text}
@@ -939,9 +1015,13 @@ function formatSize(bytes) {
 document.addEventListener('DOMContentLoaded', () => {
   initThemeToggle();
   initHelpModal();
+  initTopicsModal();
   initAuth();
   initChatUploadZone();
 });
+
+
+
 
 
 

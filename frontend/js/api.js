@@ -70,6 +70,7 @@ const AuthAPI = {
 const ChatAPI = {
   getKBs:          ()           => api('GET',    '/chat/knowledge-bases'),
   getKBPermission: (kbId)       => api('GET',    `/chat/kb-permission/${kbId}`),
+  getKBTopics:     (kbId)       => api('GET',    `/chat/kb-topics/${kbId}`),
   getSessions:     ()           => api('GET',    '/chat/sessions'),
   getMessages:     (sessionId)  => api('GET',    `/chat/sessions/${sessionId}/messages`),
   deleteSession:   (sessionId)  => api('DELETE', `/chat/sessions/${sessionId}`),
